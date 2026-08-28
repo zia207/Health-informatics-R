@@ -1,0 +1,462 @@
+---
+title: "Module 8: Data Quality and Validation"
+---
+
+![Health-Informatics: An R Tutorial](../../Image/chapter-banner.png)
+
+**Health Informatics in R** · Part II: Interoperability & Data Engineering · Module 8 of 16
+
+---
+
+Analytics is only as trustworthy as the data underneath it. Health data is
+notoriously messy — missing labs, impossible values, broken links between tables.
+This module builds a systematic **data-quality (DQ) assessment** using the widely
+adopted **Kahn framework**: *conformance, completeness, plausibility*.
+
+## Learning objectives
+
+By the end of this module you will be able to:
+
+1. Apply the **Kahn DQ framework** - conformance, completeness, plausibility.
+2. Write **automated checks** for data types, value domains, and referential integrity.
+3. **Profile** a dataset's missingness and distributions.
+4. Flag outliers with simple **anomaly detection**.
+5. Assemble a reusable **DQ scorecard** and record **provenance**.
+
+## Dataset
+
+The synthetic EHR - but we deliberately **inject a few defects** (an impossible age,
+a broken foreign key, an out-of-range lab, a missing value) so the checks have
+something to catch. This mirrors what real DQ tooling faces.
+
+```{r}
+# --- Self-contained synthetic EHR generator (identical to Part I) ---
+# This is the SAME generator from Module 1. We rebuild the fake hospital database
+# here so this notebook can run on its own. Nothing here is a real patient.
+library(dplyr)
+library(tibble)
+
+# This function generates a synthetic electronic health record (EHR) dataset.
+# It creates mock tables for patients, encounters, observations, conditions, and medications,
+# all with plausible structure, but not referencing any real patients or requiring external data.
+make_synthetic_ehr <- function(n_patients = 200, seed = 42) {
+  # Generate a small, internally-consistent synthetic EHR dataset.
+  # Returns a list of linked tibbles: patients, encounters, observations,
+  # conditions, and medications. This is for illustrative, educational use.
+  set.seed(seed)  # same seed => same fake people every run
+
+  # --- patients table ---
+  # Create a tibble with n_patients patients, each with a name, sex, age, and birth year.
+  first <- c("Ava","Liam","Noah","Mia","Zoe","Omar","Ivan","Sara","Leo","Nina",
+             "Ruth","Kai","Yara","Theo","Ida","Sam","Ana","Eli","Rex","Uma")
+  last  <- c("Khan","Ortiz","Chen","Diaz","Patel","Ali","Brown","Nash","Reed","Vega",
+             "Cole","Frost","Grant","Hale","Iqbal","Jain","Kerr","Lund","Mora","Park")
+  sexes <- sample(c("male", "female"), size = n_patients, replace = TRUE, prob = c(0.49, 0.51))
+  ages  <- sample(18:89, size = n_patients, replace = TRUE)
+  # Columns:
+  #   patient_id  — unique ID, e.g. "P1000", "P1001"
+  #   given_name / family_name — randomly chosen from the name lists
+  #   sex, age — pre-generated vectors
+  #   birth_year — derived from age, assuming the reference year 2026
+  patients <- tibble(
+    patient_id  = sprintf("P%d", 1000 + (0:(n_patients - 1))),
+    given_name  = sample(first, size = n_patients, replace = TRUE),
+    family_name = sample(last,  size = n_patients, replace = TRUE),
+    sex         = sexes,
+    age         = ages,
+    birth_year  = 2026 - ages
+  )
+
+  # --- encounters table ---
+  # Each patient gets 1–4 visits. Types and dates are random but internally consistent.
+  #   encounter_id    — unique, zero-padded (E00001, E00002, ...)
+  #   encounter_type  — ambulatory 55%, emergency 15%, inpatient 10%, wellness 20%
+  #   date            — a random day in a 3-year window starting 2023-01-01
+  enc_types <- c("ambulatory", "emergency", "inpatient", "wellness")
+  enc_list <- vector("list", 0)
+  n <- 0
+  for (pid in patients$patient_id) {
+    n_visits <- sample.int(4, 1)  # 1 to 4 encounters per patient
+    for (j in seq_len(n_visits)) {
+      n <- n + 1
+      day <- sample(0:(365 * 3 - 1), 1)  # offset within 3 years
+      enc_list[[n]] <- tibble(
+        encounter_id = sprintf("E%05d", n),
+        patient_id = pid,
+        encounter_type = sample(enc_types, 1, prob = c(0.55, 0.15, 0.10, 0.20)),
+        date = as.Date("2023-01-01") + day
+      )
+    }
+  }
+  encounters <- bind_rows(enc_list)
+
+  # --- observations table ---
+  # Labs and vitals attached to encounters. Each row is (name, unit, lo, hi).
+  # A value is drawn uniformly in [lo, hi]; 70% of (encounter, measure) pairs exist
+  # so the table looks sparse the way a real EHR does.
+  obs_defs <- tribble(
+    ~name, ~unit, ~lo, ~hi,
+    "Body height", "cm", 150, 195,
+    "Body weight", "kg", 50, 110,
+    "Systolic blood pressure", "mmHg", 100, 165,
+    "Heart rate", "/min", 55, 100,
+    "Hemoglobin A1c", "%", 4.8, 9.5
+  )
+  obs_list <- vector("list", 0)
+  m <- 0
+  for (i in seq_len(nrow(encounters))) {
+    e <- encounters[i, ]
+    for (k in seq_len(nrow(obs_defs))) {
+      if (runif(1) < 0.7) {
+        m <- m + 1
+        obs_list[[m]] <- tibble(
+          observation_id = sprintf("O%06d", m),
+          encounter_id = e$encounter_id,
+          patient_id = e$patient_id,
+          observation = obs_defs$name[k],
+          value = round(runif(1, obs_defs$lo[k], obs_defs$hi[k]), 1),
+          unit = obs_defs$unit[k],
+          date = e$date
+        )
+      }
+    }
+  }
+  observations <- bind_rows(obs_list)
+
+  # --- conditions table ---
+  # Each patient is assigned 0–3 unique diagnoses from a small pool.
+  cond_pool <- c("Essential hypertension", "Type 2 diabetes mellitus", "Asthma",
+                 "Acute bronchitis", "Major depressive disorder", "Osteoarthritis",
+                 "Chronic kidney disease", "Anemia")
+  cond_list <- vector("list", 0)
+  cn <- 0
+  for (pid in patients$patient_id) {
+    n_cond <- sample(0:3, 1)
+    if (n_cond > 0) {
+      chosen <- sample(cond_pool, size = n_cond, replace = FALSE)
+      for (cc in chosen) {
+        cn <- cn + 1
+        cond_list[[cn]] <- tibble(condition_id = sprintf("C%05d", cn), patient_id = pid, condition = cc)
+      }
+    }
+  }
+  conditions <- bind_rows(cond_list)
+
+  # --- medications table ---
+  # Same pattern as conditions: 0–3 unique drugs per patient.
+  med_pool <- c("Lisinopril", "Metformin", "Albuterol", "Atorvastatin",
+                "Sertraline", "Amoxicillin", "Ibuprofen", "Hydrochlorothiazide")
+  med_list <- vector("list", 0)
+  mn <- 0
+  for (pid in patients$patient_id) {
+    n_med <- sample(0:3, 1)
+    if (n_med > 0) {
+      chosen <- sample(med_pool, size = n_med, replace = FALSE)
+      for (mm in chosen) {
+        mn <- mn + 1
+        med_list[[mn]] <- tibble(medication_id = sprintf("M%05d", mn), patient_id = pid, medication = mm)
+      }
+    }
+  }
+  medications <- bind_rows(med_list)
+
+  list(
+    patients = patients,
+    encounters = encounters,
+    observations = observations,
+    conditions = conditions,
+    medications = medications
+  )
+}
+
+# Generate the five linked tables. Each notebook in this series starts from here.
+ehr <- make_synthetic_ehr()
+cat("Tables:", paste(sprintf("%s (%d rows)", names(ehr), sapply(ehr, nrow)), collapse = ", "), "\n")
+```
+
+```{r}
+# Inject controlled defects into COPIES of the tables so the original `ehr`
+# list stays clean. Real DQ tooling is tested the same way: you need known
+# bad rows to confirm the checks actually fire.
+#
+# The five defects cover the three Kahn dimensions we will check:
+#   age = 210          -> plausibility (impossible age)
+#   sex = "unknown"    -> conformance / value-domain (not in {male, female})
+#   value = 480        -> plausibility (impossible systolic BP)
+#   value = NA         -> completeness (missing lab)
+#   patient_id = P9999 -> conformance / relational (broken foreign key)
+patients <- ehr$patients
+observations <- ehr$observations
+
+patients$age[1] <- 210        # implausible age
+patients$sex[2] <- "unknown"  # nonconformant category
+
+# We target a Systolic blood pressure row specifically (rather than a fixed
+# row number, as the Python notebook does) so the anomaly-detection example
+# in 8.3 has a guaranteed outlier to find — R's random stream doesn't line up
+# with the same row positions as numpy's.
+sbp_idx <- which(observations$observation == "Systolic blood pressure")[1]
+observations$value[sbp_idx] <- 480  # impossible systolic BP
+
+miss_idx <- which(observations$observation != "Systolic blood pressure")[3]
+observations$value[miss_idx] <- NA  # missing value
+
+fk_idx <- which(observations$observation != "Systolic blood pressure")[1]
+observations$patient_id[fk_idx] <- "P9999"  # broken referential link
+
+cat("Injected 5 defects across patients & observations for the checks to find.\n")
+```
+
+## 8.1 Conformance - does the data match its expected structure?
+
+This section introduces the concept of "conformance" in data quality checks.
+Conformance checks ensure that:
+  - Values are of the correct data type (e.g., strings, numbers).
+  - Values fall within a specified, allowed set (the value domain; e.g., sex must be either "male" or "female").
+  - Relationships between tables are valid and intact (relational integrity; e.g., every patient_id referenced in an observation should exist in the patients table).
+These checks are generally broken down into three subcategories:
+  1. Value type - do data values have the expected type?
+  2. Value domain - are data values from the allowed set?
+  3. Relational - do references across tables (like foreign keys) point to real rows?
+
+```{r}
+# Conformance asks: are values the RIGHT TYPE, in the ALLOWED DOMAIN, and are
+# RELATIONSHIPS intact? We implement two of those sub-checks here.
+#
+# Each issue is a length-5 list:
+#   (dimension, table, column, row-id, bad-value)
+# so a scorecard later can group them without parsing free text.
+check_conformance <- function(patients, observations) {
+  issues <- list()
+
+  # Value-domain: sex must be in the allowed set {male, female}.
+  # ! flips the boolean mask, so we keep rows whose sex is NOT in that set.
+  bad_sex <- patients[!(patients$sex %in% c("male", "female")), ]
+  for (i in seq_len(nrow(bad_sex))) {
+    r <- bad_sex[i, ]
+    issues[[length(issues) + 1]] <- list("conformance/value-domain", "patients", "sex",
+                                          r$patient_id, r$sex)
+  }
+
+  # Relational (referential integrity): every observations.patient_id must
+  # exist in patients. An orphan row is a broken link — the lab has no owner.
+  valid_ids <- unique(patients$patient_id)
+  orphans <- observations[!(observations$patient_id %in% valid_ids), ]
+  for (i in seq_len(nrow(orphans))) {
+    r <- orphans[i, ]
+    issues[[length(issues) + 1]] <- list("conformance/relational", "observations", "patient_id",
+                                          r$observation_id, r$patient_id)
+  }
+  issues
+}
+
+conf_issues <- check_conformance(patients, observations)
+for (i in conf_issues) {
+  cat(sprintf("('%s', '%s', '%s', '%s', '%s')\n", i[[1]], i[[2]], i[[3]], i[[4]], i[[5]]))
+}
+```
+
+Explain code
+
+## 8.2 Completeness - is expected data present?
+
+Completeness refers to whether all the expected or required data is present in the dataset.
+For example, if we collect lab results, are there any missing values for those lab tests?
+Checking completeness helps identify missing or incomplete records that could impact analysis or decisions.
+
+```{r}
+# Completeness asks: is expected data PRESENT?
+# We count missing observation values overall, then break the rate down by
+# observation type (A1c vs heart rate vs ...) so you can see which measure
+# is holey — a missing A1c is a different operational problem than a missing height.
+check_completeness <- function(observations) {
+  miss <- sum(is.na(observations$value))  # how many NA values
+  pct <- 100 * miss / nrow(observations)  # as a percent of all rows
+
+  # Group by observation name and take the mean of a TRUE/FALSE missing flag.
+  # mean() of a logical vector is the proportion missing; * 100 turns it into %.
+  profile <- observations %>%
+    mutate(missing = is.na(value)) %>%
+    group_by(observation) %>%
+    summarise(pct_missing = round(100 * mean(missing), 1), .groups = "drop")
+
+  list(miss = miss, pct = pct, profile = profile)
+}
+
+comp <- check_completeness(observations)
+cat(sprintf("Missing observation values: %d (%.1f%%)\n", comp$miss, comp$pct))
+cat("\nMissingness by observation type:\n")
+print(as.data.frame(comp$profile), row.names = FALSE)
+```
+
+## 8.3 Plausibility - are the values believable?
+
+Plausibility means: are the data values actually believable, not just present?
+This breaks down into two types:
+- **Atemporal plausibility**: Checks if a single value seems reasonable and possible (e.g., a person's age is between 0 and 120, or a blood pressure is within human limits).
+- **Temporal plausibility**: Checks if events happen in a logically correct order (e.g., a birth date must be before any medical encounter for that person, or hospital admission comes before discharge).
+
+```{r}
+# Plausibility asks: are the values BELIEVABLE even if they have the right type?
+# Atemporal = a single value in a sane range (age, lab). Temporal (exercise 1)
+# would check order: birth before any encounter, admission before discharge.
+#
+# These bounds are coarse "could a living human have this?" ranges, not
+# clinical reference ranges. Age 210 and SBP 480 should never survive.
+RANGES <- list(
+  "Systolic blood pressure" = c(60, 250),
+  "Heart rate" = c(30, 220),
+  "Hemoglobin A1c" = c(3, 20),
+  "Body weight" = c(2, 350),
+  "Body height" = c(30, 250)
+)
+
+check_plausibility <- function(patients, observations) {
+  issues <- list()
+
+  # Atemporal: age must be in [0, 120]
+  bad_age <- patients[patients$age < 0 | patients$age > 120, ]
+  for (i in seq_len(nrow(bad_age))) {
+    r <- bad_age[i, ]
+    issues[[length(issues) + 1]] <- list("plausibility/atemporal", "patients", "age",
+                                          r$patient_id, r$age)
+  }
+
+  # Atemporal: each observation value must fall in its RANGES entry.
+  # Rows with a missing value are skipped -- we already counted those under
+  # completeness. A measure with no RANGES entry never gets flagged (-Inf, Inf).
+  obs_nonmiss <- observations[!is.na(observations$value), ]
+  for (i in seq_len(nrow(obs_nonmiss))) {
+    r <- obs_nonmiss[i, ]
+    rng <- RANGES[[r$observation]]
+    if (is.null(rng)) rng <- c(-Inf, Inf)
+    if (!(r$value >= rng[1] && r$value <= rng[2])) {
+      issues[[length(issues) + 1]] <- list("plausibility/atemporal", "observations", r$observation,
+                                            r$observation_id, r$value)
+    }
+  }
+  issues
+}
+
+plaus_issues <- check_plausibility(patients, observations)
+for (i in plaus_issues) {
+  cat(sprintf("('%s', '%s', '%s', '%s', %s)\n", i[[1]], i[[2]], i[[3]], i[[4]], i[[5]]))
+}
+```
+
+### Milestone 1 - anomaly detection on a measurement distribution
+
+In this section, we perform anomaly detection on a measurement distribution to identify data points that are statistically extreme (outliers) within the dataset, even if they are physically possible values.
+
+```{r}
+# Range checks catch values that are physically impossible. Anomaly detection
+# catches values that are *possible* but statistically extreme in THIS dataset.
+# A z-score of 3 means "3 standard deviations from the mean" — a common cutoff.
+#
+# z = (value - mean) / sd
+# |z| > 3 -> flag as an outlier (the injected SBP of 480 will light up)
+library(ggplot2)
+
+sbp <- observations %>%
+  filter(observation == "Systolic blood pressure") %>%
+  filter(!is.na(value))
+
+mean_sbp <- mean(sbp$value)
+std_sbp <- sd(sbp$value)
+sbp <- sbp %>% mutate(z = (value - mean_sbp) / std_sbp)
+outliers <- sbp %>% filter(abs(z) > 3)
+
+cat(sprintf("Systolic BP: mean=%.1f, std=%.1f\n", mean_sbp, std_sbp))
+cat(sprintf("Outliers (|z|>3): %d\n", nrow(outliers)))
+print(as.data.frame(outliers[, c("observation_id", "value", "z")]), row.names = FALSE)
+
+ggplot(sbp, aes(x = value)) +
+  geom_histogram(bins = 30, fill = "#4C72B0", color = "white") +
+  geom_vline(aes(xintercept = mean_sbp + 3 * std_sbp, linetype = "+3σ"), color = "#C44E52") +
+  scale_linetype_manual(name = "", values = "dashed") +
+  labs(title = "Systolic BP distribution with anomaly threshold",
+       x = "Systolic blood pressure (mmHg)", y = "Count") +
+  theme_minimal()
+```
+
+### Milestone 2 - assemble a DQ scorecard
+
+In this step, we'll assemble a Data Quality (DQ) scorecard.
+The scorecard summarizes the main dimensions of data quality—conformance, completeness, and plausibility—by reporting the number of issues detected for each.
+This provides a quick overview so a data steward can easily scan and assess the overall quality of the dataset.
+
+```{r}
+# A scorecard rolls the three Kahn dimensions into one table a steward can scan.
+# n_issues = 0 -> PASS, anything else -> FLAG. This is the same idea as Module 6's
+# validation gate, just reported instead of aborting the load.
+dq_scorecard <- function(patients, observations) {
+  conf <- check_conformance(patients, observations)
+  plaus <- check_plausibility(patients, observations)
+  comp <- check_completeness(observations)
+
+  card <- tibble(
+    dimension = c("Conformance", "Completeness", "Plausibility"),
+    check = c("value-domain + referential", "missing observation values", "range/age violations"),
+    n_issues = c(length(conf), as.integer(comp$miss), length(plaus))
+  )
+  # ifelse() is vectorized if-then: 0 issues -> PASS, otherwise FLAG
+  card$status <- ifelse(card$n_issues == 0, "PASS", "FLAG")
+  card
+}
+
+scorecard <- dq_scorecard(patients, observations)
+cat("DATA QUALITY SCORECARD\n")
+print(as.data.frame(scorecard), row.names = FALSE)
+```
+
+## 8.4 Provenance and lineage
+
+Data quality (DQ) findings are only useful if you can trace the origin and transformations of each data value—that is, track its **provenance**. Provenance ensures that, for any piece of data, you know **where it came from** and **what processing steps it went through**.
+At a minimum, provenance records for any processed dataset should capture:
+- The original data source and how the dataset was generated (including code, parameters, and seeds, if any).
+- When the data was processed.
+- The size or row counts of tables after processing.
+- Which data quality checks were applied.
+- Any known issues or caveats (e.g., intentionally injected errors for testing).
+This information makes DQ assessments trustworthy, reproducible, and auditable.
+
+```{r}
+# A DQ result is only actionable if you can trace WHERE each value came from
+# and WHAT happened to it. This list is the minimum provenance to store with
+# any processed dataset: who generated it, when, how big it was, which checks
+# ran, and any known caveats (here: we injected 5 defects on purpose).
+library(lubridate)
+library(jsonlite)
+
+provenance <- list(
+  dataset = "synthetic_ehr_v1",
+  generated_by = "make_synthetic_ehr(seed=42)",  # seed makes it re-runnable
+  processed_at = format(with_tz(now(), "UTC"), "%Y-%m-%dT%H:%M:%S+00:00"),
+  row_counts = setNames(as.list(sapply(ehr, nrow)), names(ehr)),
+  dq_checks_run = list("conformance", "completeness", "plausibility"),
+  known_defects_injected = 5
+)
+
+# toJSON() pretty-prints the list so it can be saved beside the dataset
+cat(toJSON(provenance, auto_unbox = TRUE, pretty = TRUE))
+```
+
+## Exercises
+
+1. Add a **temporal plausibility** check: flag any encounter dated before the
+   patient's `birth_year`.
+2. Add a **uniqueness** conformance check ensuring `observation_id` is a primary key.
+3. Turn the scorecard into a **pass/fail gate** (as in Module 6) that raises when
+   any dimension exceeds a threshold you set.
+
+## Key takeaways
+
+- The **Kahn framework** organizes DQ into **conformance, completeness, plausibility**.
+- Checks should be **automated, reusable, and produce a scorecard** — not one-off eyeballing.
+- **Anomaly detection** catches values that pass type checks but are clinically absurd.
+- **Provenance** makes a DQ assessment auditable and reproducible.
+
+---
+*End of Part II - Interoperability & Data Engineering*.
+
+*Next: Part III - Privacy, Text, and Applied Informatics*.

@@ -1,0 +1,427 @@
+---
+title: "Module 10: Clinical Natural Language Processing"
+---
+
+![](../../Image/chapter-banner.png)
+
+**Health Informatics in R** · Part III: Privacy, Text & Applied Informatics · Module 10 of 16
+
+---
+
+Roughly **80% of clinical information lives in free text** - notes, reports,
+discharge summaries. Turning that text into structured, coded facts is the job of
+**clinical NLP**. This module builds a rule-based clinical NLP pipeline: sentence
+segmentation, concept extraction, **negation/context** detection, and mapping to
+terminology codes.
+
+## Learning objectives
+
+By the end of this module you will be able to:
+
+1. Explain why clinical text needs **specialized** NLP (abbreviations, negation, structure).
+2. Tokenize and **sentence-segment** clinical notes with base R regex rules.
+3. Extract **clinical concepts** with a dictionary/phrase-matching approach.
+4. Detect **negation and context** (asserted vs negated vs historical/family) with a rule engine.
+5. **Map** extracted mentions to SNOMED/RxNorm codes and detect **note sections**.
+
+## Dataset
+
+The two fabricated clinical notes from Module 9. No real patients; the point is the
+*shape* of clinical language (abbreviations like "h/o", negations like "denies",
+family-history mentions).
+
+```{r}
+#| message: false
+library(dplyr)
+library(tibble)
+library(stringr)
+
+# Synthetic clinical notes containing FABRICATED identifiers (no real people)
+notes <- list(
+  list(note_id = "N001", patient_id = "P1000", text =
+    paste0("Ava Khan (MRN 4471982) seen on 03/12/2024. Contact 607-555-0148. ",
+           "58 yo F with h/o hypertension and type 2 diabetes presents for follow-up. ",
+           "BP 148/88. Denies chest pain. No shortness of breath. Continue lisinopril; ",
+           "recheck A1c in 3 months. Lives at 12 Elm St, Ithaca NY.")),
+  list(note_id = "N002", patient_id = "P1001", text =
+    paste0("Liam Ortiz, DOB 07/22/1969, MRN 5580321. Presents with acute bronchitis. ",
+           "Reports cough x5 days. Negative for fever. Family history of asthma. ",
+           "Started amoxicillin. Follow up if not improving. Email liam.o@example.com."))
+)
+for (n in notes) {
+  cat(n$note_id, "-", substr(n$text, 1, 70), "...\n")
+}
+```
+
+## 10.1 Why clinical NLP is hard
+
+General-purpose NLP stumbles on clinical text because of:
+
+- **Abbreviations & jargon** —-"h/o", "SOB", "BP", "x5 days".
+- **Negation** - "denies chest pain" asserts the *absence* of a finding; naive keyword
+  search would wrongly flag chest pain.
+- **Context** - "family history of asthma" is about a *relative*, not the patient.
+- **Structure** - notes have sections (HPI, PMH, Meds, Assessment) that change meaning.
+
+A pipeline that ignores negation and context produces dangerously wrong structured data.
+
+## 10.2 Tokenization and sentence segmentation
+
+Tokenization and sentence segmentation are foundational pre-processing steps in NLP.
+- **Tokenization** splits text into smaller units called tokens (typically words, numbers, punctuation).
+  In clinical text, this must robustly handle abbreviations, medical terms, and identifiers (e.g., "h/o", "03/12/2024", "A1c").
+- **Sentence segmentation** (sentence boundary detection) divides text into sentences.
+  This can be tricky in clinical notes due to telegraphic style (missing periods), bulleted lists, or fragmentary findings.
+
+A production R pipeline would reach for `spacyr` (a reticulate bridge to spaCy),
+`udpipe`, or `quanteda` for this step. Here we implement a simple regex-based sentence
+splitter directly in R: it needs no external model and demonstrates the same idea —
+split on sentence-ending punctuation, being careful not to split on the decimal-like
+patterns inside clinical abbreviations (dates, "A1c", numeric ranges).
+
+```{r}
+# A lightweight sentence segmenter: split on ". " / "! " / "? " while keeping
+# the terminal punctuation attached to each sentence.
+sentencize <- function(text) {
+  # Split after a sentence-ending punctuation mark followed by whitespace
+  # (mirrors a default spaCy sentencizer's punctuation-based rule).
+  pieces <- str_split(text, "(?<=[.!?])\\s+")[[1]]
+  str_trim(pieces)
+}
+
+# Process the first clinical note into sentences.
+sents_note0 <- sentencize(notes[[1]]$text)
+
+cat("Sentences detected:\n")
+for (i in seq_along(sents_note0)) {
+  cat(sprintf("  %d. %s\n", i, sents_note0[i]))
+}
+```
+
+## 10.3 Concept extraction with a clinical gazetteer
+
+A cornerstone technique in rule-based clinical NLP is the **dictionary lookup** approach.
+Here, a pre-defined, curated list of relevant clinical terms, known as a gazetteer, is matched directly to text using exact or near-exact string matches.
+This enables quick identification of medical problems, medications, symptoms, and other entities of interest.
+In R we implement this as a small set of `stringr` regex patterns built from the
+gazetteer terms — the same idea as spaCy's `PhraseMatcher` in the Python version:
+- It matches entire multi-word phrases (not just single tokens).
+- Matching is performed case-insensitively.
+- It is a simple vectorized scan, so it stays fast even over many notes.
+With this dictionary-matching approach, the pipeline can rapidly flag the presence of terms from the clinical gazetteer, providing a foundation for further semantic analysis.
+
+```{r}
+# Define a small clinical gazetteer (dictionary):
+# It maps semantic type labels (like "problem" and "medication") to lists of term strings representing clinical entities.
+GAZETTEER <- list(
+  problem = c("hypertension", "type 2 diabetes", "acute bronchitis", "asthma",
+              "chest pain", "shortness of breath", "fever", "cough"),
+  medication = c("lisinopril", "amoxicillin", "metformin", "atorvastatin")
+)
+
+# Find sentence boundaries as character offsets so each match can be tied back
+# to the sentence that contains it (mirrors spaCy's `span.sent`).
+sentence_spans <- function(text) {
+  sents <- sentencize(text)
+  spans <- tibble(sent = sents, start = NA_integer_, end = NA_integer_)
+  pos <- 1L
+  for (i in seq_along(sents)) {
+    idx <- str_locate(str_sub(text, pos), fixed(sents[i]))
+    s <- pos + idx[1, "start"] - 1L
+    e <- pos + idx[1, "end"] - 1L
+    spans$start[i] <- s
+    spans$end[i] <- e
+    pos <- e + 1L
+  }
+  spans
+}
+
+# Define a function to extract concepts from input text using the gazetteer:
+extract_concepts <- function(text) {
+  spans <- sentence_spans(text)
+  out <- list()
+  # For every semantic type and term, scan the text (case-insensitive, "LOWER" style match).
+  for (semtype in names(GAZETTEER)) {
+    for (term in GAZETTEER[[semtype]]) {
+      m <- str_locate_all(text, regex(term, ignore_case = TRUE))[[1]]
+      if (nrow(m) > 0) {
+        for (i in seq_len(nrow(m))) {
+          start <- m[i, "start"]; end <- m[i, "end"]
+          sent_idx <- which(spans$start <= start & start <= spans$end)[1]
+          out[[length(out) + 1]] <- tibble(
+            text = str_sub(text, start, end),   # matched phrase as-is in text
+            type = semtype,                     # "problem" or "medication"
+            start = start,                       # character offset where phrase starts
+            end = end,                           # character offset where phrase ends
+            sent = if (!is.na(sent_idx)) spans$sent[sent_idx] else NA_character_
+          )
+        }
+      }
+    }
+  }
+  bind_rows(out) %>% arrange(start)
+}
+
+# Extract concepts from the first note in our clinical notes collection.
+concepts <- extract_concepts(notes[[1]]$text)
+
+cat("Concepts extracted from note N001:\n")
+print(as.data.frame(concepts[, c("text", "type")]), row.names = FALSE)
+```
+
+## 10.4 Negation and context detection
+
+Extracting clinical concepts is only the first step: we also need to determine the context in which a concept appears.
+For example, in sentences like "**Denies** chest pain" or "**no** shortness of breath", the clinical problem is actually *negated*—the patient does not have the problem.
+To address this, we implement a simple **ConText-style** rule engine. This approach involves scanning the words before (and sometimes after) each concept in its sentence, searching for specific cue words or phrases—known as *triggers*—that change the assertion status of the concept.
+Common triggers can indicate that a finding is negated (e.g., "no", "denies"), historical, or related to family history.
+By detecting these triggers, we can assign each identified concept an assertion status, such as "present", "negated", "historical", or "family", thereby capturing more accurate clinical meaning from the text.
+
+```{r}
+# Negation and context triggers for clinical concept assertion detection.
+NEG_TRIGGERS    <- c("denies", "no", "not", "negative for", "without", "rules out", "never")  # Indicative of negation (the patient does NOT have the problem)
+FAMILY_TRIGGERS <- c("family history", "mother", "father", "sibling", "parent")                # Indicates the problem relates to family, not the patient
+HIST_TRIGGERS   <- c("h/o", "history of", "previous", "prior", "past")                         # Indicates a historical problem, not currently present
+
+#' Determines the assertion status (e.g., present, negated, family, historical) of a
+#' clinical concept within a document using simple keyword-based (ConText-style) rules.
+#'
+#' - Looks to the left of a concept mention in its sentence for cue words.
+#' - Returns a string indicating context status (family, negated, historical, or present).
+assert_status <- function(concept, text, spans) {
+  # Find the sentence that contains the concept's mention based on character offsets.
+  sent_idx <- which(spans$start <= concept$start & concept$start <= spans$end)[1]
+  # Examine the sentence fragment to the left of the mention, lowercased for easier matching.
+  window <- if (!is.na(sent_idx)) {
+    str_to_lower(str_sub(text, spans$start[sent_idx], concept$start - 1))
+  } else ""
+  # Assign assertion status based on which trigger words are found in the window.
+  if (any(str_detect(window, fixed(FAMILY_TRIGGERS)))) return("family")
+  if (any(str_detect(window, fixed(NEG_TRIGGERS)))) return("negated")
+  if (any(str_detect(window, fixed(HIST_TRIGGERS)))) return("historical")
+  "present"  # Default: the problem is actively present
+}
+
+# Apply assertion classification to each detected concept in the note.
+spans0 <- sentence_spans(notes[[1]]$text)
+concepts$assertion <- vapply(seq_len(nrow(concepts)), function(i) {
+  assert_status(concepts[i, ], notes[[1]]$text, spans0)
+}, character(1))
+```
+
+### Milestone 1 -  asserted vs negated problems
+
+In clinical NLP, it's important to distinguish between problems that are actively present (asserted) and those that are specifically stated to be absent (negated) in the documentation.
+
+*Asserted problems* are conditions explicitly documented as affecting the patient (e.g., "Patient has hypertension").
+
+*Negated problems* are conditions the patient specifically denies or is documented as not having (e.g., "Denies chest pain"; "No shortness of breath").
+
+This distinction is made possible by using contextual rules that look for negation cues (like "no", "denies") near mentions of clinical problems, ensuring more accurate extraction and interpretation of the patient's medical status.
+
+```{r}
+# The following code block organizes all detected clinical concepts,
+# displays each concept with its type and assertion status, and then summarizes which problems
+# are currently active versus those explicitly marked as absent (negated).
+
+# 1. concepts is already a tibble/data frame of concept rows for easier inspection/manipulation.
+df <- concepts
+
+# 2. Print all concepts, showing their textual mention, their type (e.g., problem, medication), and their assertion status
+#    (such as "present", "negated", etc.).
+cat("Concepts with assertion status (note N001):\n")
+print(as.data.frame(df[, c("text", "type", "assertion")]), row.names = FALSE)
+
+# 3. Extract and print the list of problems that are actively present (not negated, not family, not historical).
+cat("\nActive problems (present only):",
+    paste(df %>% filter(type == "problem", assertion == "present") %>% pull(text), collapse = ", "), "\n")
+
+# 4. Extract and print the list of concept mentions that have been classified as explicitly negated.
+cat("Explicitly negated       :",
+    paste(df %>% filter(assertion == "negated") %>% pull(text), collapse = ", "), "\n")
+```
+
+```{r}
+# This code demonstrates how the assertion classification identifies family-history and historical mentions in a clinical note (Note N002).
+# 1. Extract clinical concepts and their sentence spans from the note text.
+concepts2 <- extract_concepts(notes[[2]]$text)
+spans2 <- sentence_spans(notes[[2]]$text)
+
+# 2. For each detected concept, determine the assertion status (such as present, negated, family, or historical).
+concepts2$assertion <- vapply(seq_len(nrow(concepts2)), function(i) {
+  assert_status(concepts2[i, ], notes[[2]]$text, spans2)
+}, character(1))
+
+# 3. Organize and display all concepts along with their type and assertion results.
+df2 <- concepts2
+cat("Note N002 concepts:\n")
+print(as.data.frame(df2[, c("text", "type", "assertion")]), row.names = FALSE)
+
+# 4. Highlight the tagging of 'asthma' as a 'family' problem, indicating it belongs to a relative, not the patient themself.
+cat("\nNote 'asthma' is tagged 'family' — it belongs to a relative, not the patient.\n")
+```
+
+## 10.5 Mapping mentions to terminology codes
+
+In the last step, we connect each clinical concept that is currently *present* in the note to a standardized terminology code
+(using mapping dictionaries introduced earlier in Module 3). This transforms free-text extractions into structured, coded data
+that can be consistently interpreted and analyzed across systems.
+
+```{r}
+TERM_TO_CODE <- list(
+  "hypertension"     = c(system = "SNOMED", code = "38341003"),
+  "type 2 diabetes"  = c(system = "SNOMED", code = "44054006"),
+  "acute bronchitis" = c(system = "SNOMED", code = "10509002"),
+  "asthma"           = c(system = "SNOMED", code = "195967001"),
+  "lisinopril"       = c(system = "RxNorm", code = "29046"),
+  "amoxicillin"      = c(system = "RxNorm", code = "723"),
+  "metformin"        = c(system = "RxNorm", code = "6809")
+)
+code_concept <- function(text) {
+  hit <- TERM_TO_CODE[[str_to_lower(text)]]
+  if (is.null(hit)) c(system = NA_character_, code = NA_character_) else hit
+}
+
+present <- df %>% filter(assertion == "present")
+coded <- t(vapply(present$text, code_concept, character(2)))
+present$system <- coded[, "system"]
+present$code <- coded[, "code"]
+
+cat("Coded structured output from note N001 (present concepts):\n")
+print(as.data.frame(present[, c("text", "type", "assertion", "system", "code")]), row.names = FALSE)
+```
+
+## 10.6 Section detection
+
+Clinical notes are divided into **sections**, each identified by a header such as "HPI", "Assessment", or "Medications".
+The meaning of information found in a note often depends on which section it appears in—e.g., "Family History" indicates a condition applies to a relative,
+while "History of Present Illness" applies to the patient now.
+To analyze notes accurately, it's important to detect and segment these sections.
+A straightforward approach uses pattern matching to locate standard headers and split the note accordingly,
+so each segment can be interpreted with the proper clinical context.
+
+```{r}
+SECTION_HEADERS <- c("HPI", "History of Present Illness", "PMH", "Past Medical History",
+                     "Medications", "Assessment", "Plan", "Family History")
+sample_note <- paste0("HPI: 58 yo F with hypertension. ",
+                       "Medications: lisinopril 10mg daily. ",
+                       "Assessment: BP suboptimal, uptitrate.")
+
+parts <- str_split(sample_note, paste0("(", paste(SECTION_HEADERS, collapse = "|"), ")\\s*:"),
+                    simplify = FALSE)[[1]]
+headers <- str_extract_all(sample_note, paste0("(", paste(SECTION_HEADERS, collapse = "|"), ")\\s*:"))[[1]]
+headers <- str_trim(str_remove(headers, ":$"))
+# parts[1] is text before the first header (empty here); parts[2..] align with headers[1..]
+sections <- setNames(str_trim(parts[-1][seq_along(headers)]), headers)
+for (name in names(sections)) {
+  cat(sprintf("[%s] %s\n", name, sections[[name]]))
+}
+```
+
+## Production tooling
+
+This module intentionally uses simple rule-based R, but real-world clinical NLP leverages more robust production-ready toolkits:
+
+- **medspaCy** (Python, reachable from R via `reticulate`): Adds clinical-specific extensions to spaCy, including a powerful and mature implementation of the ConText algorithm for asserting presence, negation, temporality, and experiencer within clinical text. It is designed for easy customization and integration into clinical workflows.
+- **scispaCy** (Python, reachable from R via `reticulate`, or `spacyr`): Provides spaCy pipelines trained on large biomedical corpora and includes functionality for fast named entity recognition (NER) and entity linking, especially mapping terms to standardized vocabularies like UMLS, SNOMED, or RxNorm.
+- **Transformer models** (e.g., ClinicalBERT, GatorTron) — State-of-the-art neural network architectures pre-trained on large clinical corpora. These models achieve advanced context-sensitive understanding and are fine-tuned for tasks such as NER, assertion status detection, and contextual relation extraction. They enable extraction of subtle relationships and nuanced meanings in clinical documentation.
+
+Regardless of toolkit, the underlying pipeline — *extract entities → determine assertion status → map to codes → segment into sections* — remains the same. Production NLP tools primarily differ in breadth of terminology handled, segmentation precision, negation/context accuracy, scalability, support for newer standards, and integration with medical ontologies.
+
+For R users specifically, the dependency-free path shown in this notebook (regex +
+gazetteer + ConText-style rules) is a legitimate production pattern for a narrow,
+well-defined vocabulary. When broader coverage or model-based NER is required, the
+usual R options are `spacyr` (a `reticulate` bridge that drives a real spaCy pipeline
+from R), `udpipe` (dependency-free, pure-R/C++ tokenization, POS tagging, and
+lemmatization via pretrained UD models), and `quanteda` (a general text-analysis
+framework that composes well with dictionary-based concept matching like the
+gazetteer approach above).
+
+```{r}
+# Example: the same target-rule idea as medspaCy's TargetRule/ConText, expressed
+# directly with the gazetteer + assert_status() machinery already built above.
+# medspaCy's TargetRule("MI", "PROBLEM") is equivalent to adding "MI" to GAZETTEER$problem;
+# its ConText engine plays the same role as assert_status().
+mini_gazetteer <- list(problem = c("MI", "hypertension"))
+mini_text <- "No history of MI. The patient has hypertension."
+
+mini_extract <- function(text, gaz) {
+  spans <- sentence_spans(text)
+  out <- list()
+  for (semtype in names(gaz)) {
+    for (term in gaz[[semtype]]) {
+      m <- str_locate_all(text, regex(paste0("\\b", term, "\\b"), ignore_case = TRUE))[[1]]
+      if (nrow(m) > 0) {
+        for (i in seq_len(nrow(m))) {
+          start <- m[i, "start"]; end <- m[i, "end"]
+          out[[length(out) + 1]] <- tibble(text = str_sub(text, start, end), type = semtype,
+                                            start = start, end = end)
+        }
+      }
+    }
+  }
+  list(concepts = bind_rows(out), spans = spans)
+}
+
+mm <- mini_extract(mini_text, mini_gazetteer)
+mm$concepts$assertion <- vapply(seq_len(nrow(mm$concepts)), function(i) {
+  assert_status(mm$concepts[i, ], mini_text, mm$spans)
+}, character(1))
+for (i in seq_len(nrow(mm$concepts))) {
+  negated <- mm$concepts$assertion[i] == "negated"
+  cat(sprintf("Entity: %s | negated: %s\n", mm$concepts$text[i], negated))
+}
+```
+
+```{r}
+# Example: the scispaCy-style idea — generic biomedical mention spotting — done
+# with a small biomedical term list instead of a trained sci-corpus NER model.
+bio_terms <- c("Patient", "administered", "acetaminophen", "History", "diabetes mellitus")
+bio_text <- "Patient administered acetaminophen. History of diabetes mellitus."
+
+cat("R version:", R.version.string, "\n")
+cat("Biomedical mentions (rule-based stand-in for en_core_sci_sm):\n")
+for (term in bio_terms) {
+  if (str_detect(bio_text, fixed(term))) {
+    cat(" ", term, "\n")
+  }
+}
+```
+
+```{r}
+# Example: the transformer-NER idea — token classification with confidence scores —
+# done with a small rule table carrying a fixed confidence, standing in for a
+# fine-tuned biomedical token-classification model (e.g. "d4data/biomedical-ner-all").
+ner_rules <- tibble(
+  term = c("chest", "metformin"),
+  entity_group = c("Biological_structure", "Medication"),
+  score = c(1.00, 1.00)
+)
+transformer_text <- "No chest pain. The patient is on metformin."
+for (i in seq_len(nrow(ner_rules))) {
+  if (str_detect(transformer_text, regex(ner_rules$term[i], ignore_case = TRUE))) {
+    cat(sprintf("Entity: %s | type: %s | score: %.2f\n",
+                ner_rules$term[i], ner_rules$entity_group[i], ner_rules$score[i]))
+  }
+}
+```
+
+## Exercises
+
+1. Add "SOB" and "h/o" expansions to the gazetteer/preprocessing so abbreviations
+   are matched.
+2. Improve the negation engine to stop at conjunctions ("but", "however") so scope
+   doesn't leak across a sentence.
+3. Extend `TERM_TO_CODE` and report the share of extracted concepts that were
+   successfully coded (a coverage metric).
+
+## Key takeaways
+
+- Clinical NLP must handle **abbreviations, negation, context, and sections** — naive
+  keyword search is unsafe.
+- A practical pipeline is **segment → extract → assert → code → sectionize**.
+- **Negation/context detection** is what separates "patient has X" from "patient
+  denies X" — clinically decisive.
+
+---
+*Next: Module 11 — Clinical Decision Support Systems.*

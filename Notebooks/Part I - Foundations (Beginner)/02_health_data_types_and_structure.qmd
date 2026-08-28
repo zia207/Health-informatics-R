@@ -1,0 +1,527 @@
+---
+title: "Module 2: Health Data Types and Structure"
+---
+
+![Health-Informatics: An R Tutorial](../../Image/chapter-banner.png)
+
+
+**Health Informatics in R** · Part I: Foundations · Module 2 of 16
+
+---
+
+Before you can standardize, exchange, or analyze health data, you have to
+understand its **shape**. This module dissects the core entities of an EHR and
+the difference between structured, unstructured, and semi-structured data.
+
+## Learning objectives
+
+By the end of this module you will be able to:
+
+1. Distinguish **structured, unstructured, and semi-structured** clinical data.
+2. Identify the **core clinical entities**: patients, encounters, observations,
+   conditions, medications, procedures.
+3. Work with **longitudinal, time-stamped** data.
+4. Join the EHR tables into an **analysis-ready** patient view.
+5. Reshape observations between **long and wide** formats.
+
+## Dataset
+
+We reuse the synthetic EHR from Module 1 — same generator, same seed — so the
+relational structure is identical. We add a small block of free-text clinical
+notes to illustrate unstructured data.
+
+```{r}
+# --- Self-contained synthetic EHR generator (no external downloads) ---
+# This is the SAME generator from Module 1. We rebuild the fake hospital database
+# here so this notebook can run on its own. Nothing here is a real patient.
+library(dplyr)
+library(tibble)
+
+# This function generates a synthetic electronic health record (EHR) dataset.
+# It creates mock tables for patients, encounters, observations, conditions, and medications,
+# all with plausible structure, but not referencing any real patients or requiring external data.
+make_synthetic_ehr <- function(n_patients = 200, seed = 42) {
+  set.seed(seed)  # Ensures reproducibility: same seed => same fake people
+
+  # --- patients table ---
+  # Create a tibble with n_patients patients, each with a name, sex, age, and calculated birth_year.
+  first <- c("Ava","Liam","Noah","Mia","Zoe","Omar","Ivan","Sara","Leo","Nina",
+             "Ruth","Kai","Yara","Theo","Ida","Sam","Ana","Eli","Rex","Uma")
+  last  <- c("Khan","Ortiz","Chen","Diaz","Patel","Ali","Brown","Nash","Reed","Vega",
+             "Cole","Frost","Grant","Hale","Iqbal","Jain","Kerr","Lund","Mora","Park")
+  sexes <- sample(c("male", "female"), size = n_patients, replace = TRUE, prob = c(0.49, 0.51))
+  ages  <- sample(18:89, size = n_patients, replace = TRUE)
+  # This block creates a tibble called 'patients' with columns representing patient attributes.
+  # - "patient_id": Assigns a unique ID to each patient, e.g., "P1000", "P1001", etc.
+  # - "given_name": Randomly selects one of the first names for each patient.
+  # - "family_name": Randomly selects one of the last names for each patient.
+  # - "sex": The pre-generated array of male/female assignments.
+  # - "age": The pre-generated ages for each patient.
+  # - "birth_year": Calculates the year of birth based on the age, assuming a reference year of 2026.
+  patients <- tibble(
+    patient_id  = sprintf("P%d", 1000 + (0:(n_patients - 1))),
+    given_name  = sample(first, size = n_patients, replace = TRUE),
+    family_name = sample(last, size = n_patients, replace = TRUE),
+    sex         = sexes,
+    age         = ages,
+    birth_year  = 2026 - ages
+  )
+
+  # --- encounters table ---
+  # The following block generates synthetic 'encounters' for each patient:
+  # - Each patient has between 1 and 4 encounters (randomly chosen).
+  # - Each encounter is assigned a type: 'ambulatory', 'emergency', 'inpatient', or 'wellness'.
+  #   The probability of each type is respectively: 55% ambulatory, 15% emergency, 10% inpatient, and 20% wellness.
+  # - The encounter's date is randomly set within a 3-year window starting from Jan 1, 2023.
+  # - Each encounter receives:
+  #     - A unique encounter_id (e.g., E00001, E00002, ...).
+  #     - The associated patient_id.
+  #     - The randomly assigned type and date.
+  enc_rows <- list()
+  enc_types <- c("ambulatory", "emergency", "inpatient", "wellness")
+  for (pid in patients$patient_id) {
+    # Randomly determine how many encounters (between 1 and 4) this patient has
+    n_enc <- sample(1:4, 1)
+    for (i in seq_len(n_enc)) {
+      # For each encounter, pick a random day offset within 3 years (0 to 1094)
+      day <- sample(0:(365 * 3 - 1), 1)
+      enc_rows[[length(enc_rows) + 1]] <- tibble(
+        encounter_id   = sprintf("E%05d", length(enc_rows) + 1),
+        patient_id     = pid,
+        # Assign encounter type with the specified probabilities
+        encounter_type = sample(enc_types, 1, prob = c(0.55, 0.15, 0.10, 0.20)),
+        # Calculate the date of the encounter by adding day offset to Jan 1, 2023
+        date           = as.Date("2023-01-01") + day
+      )
+    }
+  }
+  # Assemble all rows into a tibble
+  encounters <- bind_rows(enc_rows)
+
+  # --- observations table ---
+  # This block generates synthetic laboratory and vital sign results ("observations") for each encounter.
+  #
+  # 1. Define a set of different types of observations (e.g., height, blood pressure) with:
+  #    - A human-readable name
+  #    - The unit of measurement
+  #    - A plausible lower and upper bound for values (lo, hi)
+  obs_defs <- list(
+    list(name = "Body height",              unit = "cm",   lo = 150, hi = 195),
+    list(name = "Body weight",               unit = "kg",   lo = 50,  hi = 110),
+    list(name = "Systolic blood pressure",   unit = "mmHg", lo = 100, hi = 165),
+    list(name = "Heart rate",                unit = "/min", lo = 55,  hi = 100),
+    list(name = "Hemoglobin A1c",            unit = "%",    lo = 4.8, hi = 9.5)
+  )
+  obs_rows <- list()
+  # 2. For every encounter (row in the encounters table):
+  for (i in seq_len(nrow(encounters))) {
+    e <- encounters[i, ]
+    # 3. For each defined observation type, with 70% probability:
+    for (od in obs_defs) {
+      if (runif(1) < 0.7) {  # 70% chance this observation is present in this encounter
+        # 4. Generate a random value within the allowed range, rounded to 1 decimal.
+        val <- round(runif(1, od$lo, od$hi), 1)
+        # 5. Assemble observation fields:
+        #    - Unique observation_id (zero-padded)
+        #    - encounter_id and patient_id (from the current encounter)
+        #    - observation name, value, unit, and date (from the encounter)
+        obs_rows[[length(obs_rows) + 1]] <- tibble(
+          observation_id = sprintf("O%06d", length(obs_rows) + 1),
+          encounter_id   = e$encounter_id,
+          patient_id     = e$patient_id,
+          observation    = od$name,
+          value          = val,
+          unit           = od$unit,
+          date           = e$date
+        )
+      }
+    }
+  }
+  # 6. Create a table of all generated observations
+  observations <- bind_rows(obs_rows)
+
+  # --- conditions table ---
+  # This block generates a table of medical conditions (diagnoses) assigned to each patient.
+  #
+  # Steps:
+  # 1. Define a list of possible conditions (diagnoses) that a patient might have, called cond_pool.
+  cond_pool <- c("Essential hypertension", "Type 2 diabetes mellitus", "Asthma",
+                 "Acute bronchitis", "Major depressive disorder", "Osteoarthritis",
+                 "Chronic kidney disease", "Anemia")
+  cond_rows <- list()
+  # 2. For every patient, randomly assign them between 0 and 3 unique conditions from the pool.
+  for (pid in patients$patient_id) {
+    # sample(0:3, 1) generates the number of conditions to assign (0-3),
+    # and sample() picks that many unique conditions for that patient.
+    n_cond <- sample(0:3, 1)
+    if (n_cond > 0) {
+      cs <- sample(cond_pool, size = n_cond, replace = FALSE)
+      for (c_name in cs) {
+        # 3. For each assigned condition, create a row with:
+        #   - a unique condition_id (zero-padded)
+        #   - the patient_id
+        #   - the condition name
+        cond_rows[[length(cond_rows) + 1]] <- tibble(
+          condition_id = sprintf("C%05d", length(cond_rows) + 1),
+          patient_id   = pid,
+          condition    = c_name
+        )
+      }
+    }
+  }
+  # 4. Assemble all condition records into a table.
+  conditions <- bind_rows(cond_rows)
+
+  # --- medications table ---
+  # This section generates a medications table, which records what medications each patient is taking.
+  #
+  # Steps:
+  # 1. Define a list of possible medications, called med_pool, that could be assigned to any patient.
+  med_pool <- c("Lisinopril", "Metformin", "Albuterol", "Atorvastatin",
+                "Sertraline", "Amoxicillin", "Ibuprofen", "Hydrochlorothiazide")
+  med_rows <- list()
+  # 2. For each patient in the patients table:
+  for (pid in patients$patient_id) {
+    # Randomly assign between 0 and 3 different medications to the patient.
+    # sample(0:3, 1) picks how many meds the patient will get (can be zero).
+    # sample() picks the medicines without replacement.
+    n_med <- sample(0:3, 1)
+    if (n_med > 0) {
+      ms <- sample(med_pool, size = n_med, replace = FALSE)
+      for (m in ms) {
+        # 3. For each assigned medication, create a row that includes:
+        #   - Unique medication_id (zero-padded)
+        #   - patient_id
+        #   - medication name
+        med_rows[[length(med_rows) + 1]] <- tibble(
+          medication_id = sprintf("M%05d", length(med_rows) + 1),
+          patient_id    = pid,
+          medication    = m
+        )
+      }
+    }
+  }
+  # 4. Assemble all medication records into a table.
+  medications <- bind_rows(med_rows)
+
+  # Return a list containing all generated synthetic EHR tables.
+  list(
+    patients     = patients,
+    encounters   = encounters,
+    observations = observations,
+    conditions   = conditions,
+    medications  = medications
+  )
+}
+
+# Generate the synthetic EHR data by calling the make_synthetic_ehr() function.
+# This returns a list where each element is a table name (e.g., "patients", "encounters")
+# and each value is a tibble with the data for that table.
+ehr <- make_synthetic_ehr()
+
+# Print out the names of each table along with the number of rows it contains,
+# to provide a quick overview of the size of each synthetic EHR table.
+cat("Tables:", paste(sprintf("%s (%d rows)", names(ehr), sapply(ehr, nrow)), collapse = ", "), "\n")
+```
+
+## 2.1 Three kinds of health data
+
+| Kind | Example | How it's stored | How you work with it |
+|---|---|---|---|
+| **Structured** | A1c = 7.2 %, coded diagnosis | Rows & columns, coded fields | `dplyr`, SQL |
+| **Unstructured** | A progress note, radiology report | Free text | NLP (Module 10) |
+| **Semi-structured** | HL7 / FHIR / CDA messages | Nested key–value / XML / JSON | Parsers (Module 4) |
+
+Roughly **80% of clinical information** lives in unstructured text — which is why
+NLP is such a large part of applied informatics.
+
+```{r}
+# This cell shows the difference between STRUCTURED data and UNSTRUCTURED data.
+#
+# Structured data lives in tables: every value sits in a named column (patient_id,
+# observation, value, unit, date). A computer can count, filter, and join it easily.
+#
+# Unstructured data is free text — a clinical note. A human can read it, but a
+# computer just sees a blob of characters until we use NLP (Module 10).
+
+cat("STRUCTURED — observations table:\n")
+# Pick a few useful columns so the printout is easy to read
+display_cols <- c("patient_id", "observation", "value", "unit", "date")
+# ehr$observations is the observations tibble from the generator above.
+# [, display_cols] keeps only those five columns.
+# head(4) means "show the first 4 rows".
+# print(..., row.names = FALSE) prints a clean table without row numbers.
+print(as.data.frame(head(ehr$observations[, display_cols], 4)), row.names = FALSE)
+
+cat("\nUNSTRUCTURED — a free-text clinical note:\n")
+# A fake progress note, written the way a clinician might type it:
+# abbreviations (y/o, h/o, HTN, T2DM), mixed facts, no columns.
+note <- paste("58 y/o with h/o HTN and T2DM presents for routine follow-up.",
+              "BP 148/88, denies chest pain. Continue lisinopril; recheck A1c in 3 months.")
+cat(note, "\n")
+```
+
+## 2.2 The core clinical entities
+
+An EHR is organized around a handful of recurring entities. In our synthetic model:
+
+- **patients** - the person (demographics)
+- **encounters** - a contact with the health system (a visit)
+- **observations** - measurements: vitals and labs
+- **conditions** - diagnoses / problems
+- **medications** - drugs prescribed or administered
+
+Real systems add **procedures, allergies, immunizations, orders, and results**,
+but these five carry most teaching examples.
+
+```{r}
+# This loop peeks at every EHR table so you can see what each one looks like.
+#
+# ehr is a list: names are table names, values are tibbles.
+# For each table we print:
+#   - a header with the table name
+#   - the first 2 rows (just enough to see the columns and a sample of values)
+for (name in c("patients", "encounters", "observations", "conditions", "medications")) {
+  df <- ehr[[name]]  # pull that table out of the list
+  cat(sprintf("=== %s ===\n", name))
+  print(as.data.frame(head(df, 2)), row.names = FALSE)
+  cat("\n")  # blank line between tables so the output is easier to scan
+}
+```
+
+### Milestone 1 - the encounter as the hub of activity
+
+In an EHR (Electronic Health Record), the encounter acts as the central point or "hub" of clinical activity. Most events—like measurements, diagnoses, orders, and treatments—are linked to a specific visit or encounter, making it the key connector for organizing and analyzing patient data over time.
+
+```{r}
+# This cell treats the encounter as the "hub" of clinical activity:
+# almost every measurement, diagnosis, and order hangs off a visit.
+#
+# Step 1: pull the encounters table out of the ehr list.
+enc <- ehr$encounters
+
+# Step 2: count how many encounters of each type we have.
+# table() looks at one column and says "how many times does each value appear?"
+# Example output: ambulatory 280, wellness 100, emergency 80, inpatient 51.
+cat("Encounter types:\n")
+print(table(enc$encounter_type))
+cat("\n")
+
+# Step 3: for each patient, count their encounters, then summarize that distribution.
+# group_by(patient_id) + summarise(n = n()) = "how many rows (visits) does each patient have?"
+# The custom summary tibble then gives count / mean / min / max of those per-patient counts.
+enc_per_patient <- enc |> count(patient_id, name = "n")
+
+enc_summary <- tibble(
+  count = nrow(enc_per_patient),
+  mean  = mean(enc_per_patient$n),
+  std   = sd(enc_per_patient$n),
+  min   = min(enc_per_patient$n),
+  `25%` = quantile(enc_per_patient$n, 0.25, names = FALSE),
+  `50%` = quantile(enc_per_patient$n, 0.50, names = FALSE),
+  `75%` = quantile(enc_per_patient$n, 0.75, names = FALSE),
+  max   = max(enc_per_patient$n)
+) |> mutate(across(everything(), ~ round(.x, 2)))
+
+cat("Encounters per patient (distribution):\n")
+print(enc_summary)
+```
+
+## 2.3 Longitudinal, time-stamped data
+
+Health data is intrinsically tied to time—meaning that many clinical measurements are collected repeatedly for a single patient across different visits or stages of life. This forms a longitudinal record, where values like blood pressure, weight, or lab results are tracked over intervals ranging from days to years. Analyzing these time-stamped data points allows us to observe trends, detect changes (such as improvement or deterioration), and assess how a patient's health evolves rather than relying on just a single measurement. For example, by following one patient's sequence of blood pressure readings, we can better understand their cardiovascular risk over time or see the effects of a new medication.
+
+```{r}
+# Health data is time-stamped: the SAME measurement (blood pressure) is taken
+# again and again. This cell follows ONE patient's systolic BP over time.
+library(lubridate)
+
+# Make a separate copy of the observations table so we can edit it
+# without changing the original ehr$observations table.
+obs <- ehr$observations
+
+# Dates currently look like 2023-05-12 and are already stored as Date objects.
+# as_date() (a no-op here) mirrors pandas' to_datetime() step for parity.
+obs$date <- as_date(obs$date)
+
+# Keep only the rows where the observation name is "Systolic blood pressure".
+# This is a filter: obs$observation == "..." is TRUE/FALSE for every row;
+# dplyr::filter() keeps only the TRUE rows.
+sbp <- obs |> filter(observation == "Systolic blood pressure")
+
+# Count how many SBP readings each patient has, then sort highest-first.
+# We pick the patient with the MOST readings so the time series is interesting.
+counts <- sbp |> count(patient_id, name = "n") |> arrange(desc(n))
+pid <- counts$patient_id[1]  # the patient_id at the top of that ranked list
+
+# Pull that one patient's SBP rows and sort them by date (oldest -> newest).
+track <- sbp |> filter(patient_id == pid) |> arrange(date)
+cat(sprintf("Patient %s — systolic BP over time:\n", pid))
+print(as.data.frame(track[, c("date", "value", "unit")]), row.names = FALSE)
+```
+
+```{r}
+# This code draws a line chart of the one patient's systolic BP over time.
+# The shaded bands are a visual reminder of "normal" vs "elevated" ranges —
+# they are teaching overlays, not a clinical diagnosis.
+library(ggplot2)
+
+band_range <- c(min(track$date), max(track$date))
+
+# Plot date on the x-axis and BP value on the y-axis.
+# geom_point puts a dot on each reading so you can see individual visits.
+p <- ggplot(track, aes(x = date, y = value)) +
+  # geom_rect draws a shaded band between two y-values across the whole x-range.
+  # Green band: roughly "normal" systolic BP (<120).
+  # Red band: roughly "elevated" (>=130). alpha makes the bands see-through.
+  geom_rect(aes(xmin = band_range[1], xmax = band_range[2], ymin = 90, ymax = 120,
+                fill = "normal (<120)"), alpha = 0.15, inherit.aes = FALSE) +
+  geom_rect(aes(xmin = band_range[1], xmax = band_range[2], ymin = 130, ymax = 180,
+                fill = "elevated (>=130)"), alpha = 0.10, inherit.aes = FALSE) +
+  geom_line(color = "#C44E52") +
+  geom_point(color = "#C44E52") +
+  scale_fill_manual(name = NULL, values = c("normal (<120)" = "#55A868",
+                                             "elevated (>=130)" = "#C44E52")) +
+  labs(title = paste("Longitudinal systolic BP — patient", pid), x = NULL, y = "mmHg") +
+  theme_minimal() +
+  theme(legend.position = "right")
+
+print(p)
+```
+
+## 2.4 Joining tables into an analysis-ready view
+
+Individual tables answer narrow questions. Real work usually needs them **joined**
+around the patient. Below we build a per-patient summary combining demographics,
+encounter counts, condition counts, and mean A1c.
+
+```{r}
+# Real analysis rarely uses one table at a time. This cell JOINS several tables
+# into one "patient view": one row per patient, with extra summary columns.
+#
+# Think of a join as: "for this patient_id, go look up extra facts in another table
+# and glue them on as new columns."
+
+patients <- ehr$patients  # the base table: one row per person
+
+# Count encounters per patient, then name that column "n_encounters"
+# so it becomes a column with a clear name after the join.
+enc_n <- ehr$encounters |> count(patient_id, name = "n_encounters")
+
+# Same idea for diagnoses: how many condition rows does each patient have?
+cond_n <- ehr$conditions |> count(patient_id, name = "n_conditions")
+
+# For A1c: keep only Hemoglobin A1c rows, then average the value per patient.
+# round(1) keeps one decimal place (e.g. 7.2).
+a1c <- obs |>
+  filter(observation == "Hemoglobin A1c") |>
+  group_by(patient_id) |>
+  summarise(mean_a1c = round(mean(value), 1), .groups = "drop")
+
+# Now glue the summaries onto the patients table.
+# left_join keeps EVERY patient, even if they have no A1c / no conditions.
+# Patients with no match get a missing value (NA) in that new column.
+patient_view <- patients |>
+  left_join(enc_n, by = "patient_id") |>
+  left_join(cond_n, by = "patient_id") |>
+  left_join(a1c, by = "patient_id")
+
+# Missing encounter/condition counts should mean "zero", not "unknown".
+# replace_na() turns NA into 0.
+patient_view <- patient_view |>
+  mutate(n_encounters = tidyr::replace_na(n_encounters, 0),
+         n_conditions = tidyr::replace_na(n_conditions, 0))
+
+# Show the first few rows of the combined view
+head(patient_view)
+```
+
+### Milestone 2 - a simple cohort question
+
+In this section, we demonstrate how to define a simple cohort—a specific group of patients—based on certain criteria in the data.
+For example, we can select patients with at least one documented medical condition and a mean Hemoglobin A1c (a key diabetes indicator) of 6.5 or above.
+This is known as a "cohort question": identifying which individuals meet a set of rules or clinical thresholds for further study.
+
+```{r}
+# A "cohort" is just a filtered list of patients who meet a rule.
+# Here the rule is: mean A1c at or above 6.5 (a common diabetes threshold)
+# AND at least one coded condition.
+#
+# The & means BOTH conditions must be true.
+cohort <- patient_view |>
+  filter(mean_a1c >= 6.5 & n_conditions >= 1)
+
+# How many people made it through the filter, out of everyone?
+cat(sprintf("Cohort size: %d of %d patients\n", nrow(cohort), nrow(patient_view)))
+
+# Show a few of them, keeping only the columns that explain WHY they qualified
+head(cohort[, c("patient_id", "age", "sex", "mean_a1c", "n_conditions")])
+```
+
+## 2.5 Long vs. wide format
+
+In the original data, observations are stored in **long** format. This means that each individual measurement
+(such as a patient's single blood pressure or heart rate reading) occupies its own row in the table,
+identified by the patient, the type of observation, and the recorded value.
+
+However, many analytic tasks and machine learning models require the data in **wide** format, where there is
+only one row per subject (such as a patient or an encounter), and each type of measurement gets its own column.
+For example, instead of having many rows for a patient with different tests, we would have a single row for
+that patient, with columns for "Body height", "Body weight", "Heart rate", etc.
+
+Converting between these formats is a common and essential skill in data science—often referred to as
+"reshaping" or "pivoting" the data. The process of moving from long to wide format is known as "pivoting,"
+while moving from wide back to long format is called "melting" or "unpivoting."
+
+```{r}
+# Long -> wide: mean value per patient per observation type
+library(tidyr)
+
+wide <- obs |>
+  group_by(patient_id, observation) |>
+  summarise(value = mean(value), .groups = "drop") |>
+  pivot_wider(names_from = observation, values_from = value) |>
+  mutate(across(-patient_id, ~ round(.x, 1)))
+
+cat("WIDE format (one row per patient):\n")
+head(wide)
+```
+
+```{r}
+# This cell does the reverse reshape: WIDE -> LONG.
+#
+# wide already has patient_id as a normal column, which pivot_longer needs.
+#
+# pivot_longer "unpivots" the table:
+#   cols       = columns to unpivot (everything except patient_id)
+#   names_to   = name for the column that will hold the old column headers
+#                (those observation names become values in a column called "observation")
+#   values_to  = name for the column that will hold the numbers
+#
+# filter(!is.na(...)) drops rows where the value is missing — a patient who never had
+# a height recorded should not get a blank height row in the long table.
+long_again <- wide |>
+  pivot_longer(cols = -patient_id, names_to = "observation", values_to = "mean_value") |>
+  filter(!is.na(mean_value))
+
+cat("LONG format (one row per patient-observation):\n")
+head(long_again)
+```
+
+## Exercises
+
+1. Build an **encounter-level** wide table (index = `encounter_id`) instead of
+   patient-level, and note why the missingness pattern changes.
+2. For each patient, compute the **time span** between first and last encounter.
+3. Flag patients whose systolic BP **increased** across their readings (a naive
+   trend feature) and count them.
+
+## Key takeaways
+
+- Health data comes **structured, unstructured, and semi-structured** — each needs
+  a different tool.
+- The EHR is a **relational model** hubbed on encounters and linked by patient.
+- Health data is **longitudinal**; reshaping **long ↔ wide** is routine.
+
+---
+*Next: Module 3 - Clinical Terminologies and Coding Systems.*

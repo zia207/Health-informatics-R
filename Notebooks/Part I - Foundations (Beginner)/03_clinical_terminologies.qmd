@@ -1,0 +1,389 @@
+---
+title: "Module 3 : Clinical Terminologies and Coding Systems"
+---
+
+![Health-Informatics: An R Tutorial](../../Image/chapter-banner.png)
+
+
+**Health Informatics in R** · Part I: Foundations · Module 3 of 16
+
+---
+
+Free-text disease names don't compute reliably: "high blood pressure",
+"hypertension", and "HTN" are the same concept to a human and three different
+strings to a machine. **Controlled terminologies** solve this by giving every
+clinical concept a stable code. This module is about those code systems and how
+to work with them in R.
+
+## Learning objectives
+
+By the end of this module you will be able to:
+
+1. Explain **why** standardized vocabularies exist and what breaks without them.
+2. Identify the major coding systems, - **ICD-10, SNOMED CT, LOINC, RxNorm, CPT**,
+   and what each is *for*.
+3. **Map / crosswalk** between a local label and standard codes.
+4. Navigate **code hierarchies** (parent–child relationships).
+5. Define and apply a **value set** to a clinical dataset.
+
+## Dataset
+
+We use small **illustrative code tables** built inline. These are real, verifiable
+codes for common concepts, deliberately kept to a handful per system, a teaching
+subset, **not** a complete terminology.
+
+> **Licensing note.** SNOMED CT (via UMLS), CPT (AMA), and others require licenses
+> for production use and bulk distribution. Using individual codes to learn is fine;
+> shipping full code sets is a licensing matter covered in the series appendix.
+
+## 3.1 Why controlled vocabularies exist
+
+Without a shared code, the same clinical idea fragments across strings, spellings,
+and abbreviations — making counting, exchange, and analysis unreliable.
+
+```{r}
+# This cell shows WHY we need codes instead of free-text disease names.
+#
+# Five clinicians can type the SAME idea five different ways. A computer
+# treats those as five different strings, so counts and joins break.
+library(dplyr)
+library(tibble)
+
+# A vector of strings that all mean "high blood pressure" to a human
+free_text <- c("Hypertension", "high blood pressure", "HTN", "htn", "Essential HTN")
+
+# unique(...) keeps only unique values. length(...) counts how many unique strings remain.
+# Result: 5 distinct strings for ONE clinical concept.
+cat("Distinct strings for ONE concept:", length(unique(free_text)), "\n")
+cat("A coded system collapses all of these to a single identifier, e.g.\n")
+cat("  ICD-10-CM  I10          (Essential hypertension)\n")
+cat("  SNOMED CT  38341003     (Hypertensive disorder)\n")
+```
+
+## 3.2 The major coding systems
+
+
+1. **ICD-10-CM (International Classification of Diseases, 10th Revision, Clinical Modification)**
+   - **Purpose:** Used primarily for diagnoses in billing, epidemiology, and health statistics reporting in the United States.
+   - **Governs:** Diagnoses (billing/reporting)
+   - **Who Maintains:** World Health Organization (WHO), with clinical modification by the U.S.
+   - **Types of Concepts:** Disorders, diseases, injuries, causes of death
+   - **Code Example:** `E11.9` (Type 2 diabetes mellitus without complications)
+   - **Notes:** Codes are alphanumeric; hierarchical structure; widely required for insurance claims and public health reporting.
+
+2. **SNOMED CT (Systematized Nomenclature of Medicine—Clinical Terms)**
+   - **Purpose:** Comprehensive clinical terminology for recording clinical data in electronic health records (EHRs).
+   - **Governs:** Clinical concepts (fine-grained)
+   - **Who Maintains:** SNOMED International
+   - **Types of Concepts:** Signs, symptoms, diagnoses, procedures, findings, body structures, organisms, substances, etc.
+   - **Code Example:** `44054006` (Diabetes mellitus type 2)
+   - **Notes:** Provides full semantic relationships; enables decision support, data analytics, and data exchange internationally; often used within EHRs to capture clinical meaning at the bedside.
+
+3. **LOINC (Logical Observation Identifiers Names and Codes)**
+   - **Purpose:** Universal standard for identifying health measurements, observations, and documents.
+   - **Governs:** Laboratories, clinical observations, and measurements
+   - **Who Maintains:** Regenstrief Institute
+   - **Types of Concepts:** Laboratory tests, clinical measurements, survey panels, vital signs
+   - **Code Example:** `4548-4` (Hemoglobin A1c in blood)
+   - **Notes:** Extensively used for reporting lab test results and exchanging clinical data between institutions.
+
+4. **RxNorm**
+   - **Purpose:** Provides normalized names and unique identifiers for medications (clinical drugs), supporting electronic prescribing, pharmacy management, and data exchange.
+   - **Governs:** Medications (ingredients/products)
+   - **Who Maintains:** U.S. National Library of Medicine (NLM)
+   - **Types of Concepts:** Medication ingredients, products, brand names, formulations
+   - **Code Example:** `6809` (Metformin)
+   - **Notes:** Connects different drug vocabularies in pharmacy systems and EHRs; facilitates e-prescribing and clinical decision support.
+
+5. **CPT (Current Procedural Terminology) / HCPCS (Healthcare Common Procedure Coding System)**
+   - **Purpose:** Standardized codes for medical procedures, diagnostic services, and supplies; used mainly for billing and insurance claims in the U.S.
+   - **Governs:** Procedures and services
+   - **Who Maintains:** CPT: American Medical Association (AMA); HCPCS: Centers for Medicare & Medicaid Services (CMS)
+   - **Types of Concepts:** Office visits, surgeries, radiology, lab tests, durable medical equipment, ambulance services
+   - **Code Example:** `99213` (Office or other outpatient visit for the evaluation and management of an established patient)
+   - **Notes:** CPT is widely used for medical billing; HCPCS extends CPT to cover Medicare, Medicaid, and supplies not included in CPT.
+
+The table below summarizes the five systems:
+
+| System              | Governs                        | Example concept                         | Example code |
+|---------------------|-------------------------------|-----------------------------------------|--------------|
+| **ICD-10-CM**       | Diagnoses (billing/reporting)  | Type 2 diabetes w/o complications       | `E11.9`      |
+| **SNOMED CT**       | Clinical concepts (fine-grained)| Diabetes mellitus type 2               | `44054006`   |
+| **LOINC**           | Labs & observations            | Hemoglobin A1c in blood                 | `4548-4`     |
+| **RxNorm**          | Medications (ingredients/products) | Metformin                          | `6809`       |
+| **CPT / HCPCS**     | Procedures & services          | Office visit, established               | `99213`      |
+
+```{r}
+#| results: asis
+# This cell builds tiny LOOKUP TABLES for four coding systems.
+# Each table has two columns:
+#   code    = the stable identifier a computer uses
+#   display = the human-readable name
+#
+# These are real, verifiable codes — but only a teaching handful, not the full
+# dictionaries (those have tens or hundreds of thousands of entries).
+library(knitr)
+
+# ICD-10-CM: diagnosis codes used for billing and reporting
+icd10 <- tribble(
+  ~code,      ~display,
+  "I10",      "Essential (primary) hypertension",
+  "E11.9",    "Type 2 diabetes mellitus without complications",
+  "J45.909",  "Unspecified asthma, uncomplicated",
+  "J20.9",    "Acute bronchitis, unspecified",
+  "F32.9",    "Major depressive disorder, single episode, unspecified"
+)
+
+# SNOMED CT: finer-grained clinical concepts used inside the EHR
+snomed <- tribble(
+  ~code,       ~display,
+  "38341003",  "Hypertensive disorder",
+  "44054006",  "Diabetes mellitus type 2",
+  "195967001", "Asthma",
+  "10509002",  "Acute bronchitis",
+  "370143000", "Major depressive disorder"
+)
+
+# LOINC: names for labs and observations ("what was measured")
+loinc <- tribble(
+  ~code,     ~display,
+  "4548-4",  "Hemoglobin A1c/Hemoglobin.total in Blood",
+  "8480-6",  "Systolic blood pressure",
+  "8867-4",  "Heart rate",
+  "29463-7", "Body weight",
+  "8302-2",  "Body height"
+)
+
+# RxNorm: names for medications (ingredients / products)
+rxnorm <- tribble(
+  ~code,   ~display,
+  "29046", "Lisinopril",
+  "6809",  "Metformin",
+  "435",   "Albuterol",
+  "83367", "Atorvastatin",
+  "36437", "Sertraline"
+)
+
+# Show all coding system tables in a single composite view
+cat("### ICD-10-CM (Diagnosis Codes)\n\n")
+print(kable(icd10))
+cat("\n\n### SNOMED CT (Clinical Concepts)\n\n")
+print(kable(snomed))
+cat("\n\n### LOINC (Labs & Observations)\n\n")
+print(kable(loinc))
+cat("\n\n### RxNorm (Medications)\n\n")
+print(kable(rxnorm))
+```
+
+## 3.3 Crosswalking a local label to standard codes
+
+In most real-world scenarios, data collected from clinical sources such as electronic health records (EHRs) is not already standardized with codes; instead, diagnoses and conditions are often recorded as free-text descriptions or local hospital-specific labels.
+The initial step in preparing this data for broader use is to "map" or "crosswalk" these local strings to universal standard code systems—such as ICD-10 for diagnoses or SNOMED CT for clinical concepts.
+This mapping process creates a bridge (the crosswalk) from each local term to the appropriate code(s) so that the information can be shared, analyzed, and compared in a consistent way across different organizations.
+In the example below, we demonstrate how to build such a crosswalk for a set of synthetic clinical condition names, linking each local label to its corresponding ICD-10 and SNOMED CT codes.
+
+```{r}
+# A "crosswalk" is a mapping table: local hospital label -> standard codes.
+# Real EHR data often arrives as local strings ("Essential hypertension").
+# We need to attach the ICD-10 and SNOMED codes that the rest of the world uses.
+
+# Each row: one local name, its ICD-10 code, and its SNOMED code
+crosswalk <- tribble(
+  ~local_label,                 ~icd10,    ~snomed,
+  "Essential hypertension",     "I10",     "38341003",
+  "Type 2 diabetes mellitus",   "E11.9",   "44054006",
+  "Asthma",                     "J45.909", "195967001",
+  "Acute bronchitis",           "J20.9",   "10509002",
+  "Major depressive disorder",  "F32.9",   "370143000"
+)
+
+# Now we JOIN the human-readable displays onto those codes so the table is readable.
+# rename(...) first so the join keys match:
+#   icd10$code    becomes icd10$icd10       — then we merge on "icd10"
+#   snomed$code   becomes snomed$snomed     — then we merge on "snomed"
+# After the joins, each row has both codes AND both display names.
+mapped <- crosswalk |>
+  inner_join(icd10 |> rename(icd10 = code, icd10_display = display), by = "icd10") |>
+  inner_join(snomed |> rename(snomed = code, snomed_display = display), by = "snomed")
+mapped
+```
+
+### Milestone 1 - apply the crosswalk to EHR conditions
+
+To apply the crosswalk to EHR conditions, we start with a dataset of condition records from an EHR, where diagnoses are recorded as local human-readable strings (such as "Essential hypertension" or "Asthma").
+The crosswalk table we built maps each local label to the appropriate standard codes (ICD-10 and SNOMED).
+We use a LEFT JOIN to merge the EHR conditions with the crosswalk:
+  - For each EHR record, dplyr searches for a matching local label in the crosswalk.
+  - If it finds one, it attaches the corresponding ICD-10 and SNOMED codes.
+  - If it does not find a match, the standard code fields will be empty (NA), revealing any unmatched/unmapped data.
+This process simulates the real-world workflow in data integration projects,
+where standardized coding is essential for interoperability, research, and analytics.
+
+```{r}
+# Apply the crosswalk to a small fake "conditions" table — the same idea as
+# taking a hospital's diagnosis list and stamping standard codes onto it.
+set.seed(42)  # fixed seed so everyone gets the same fake patients
+
+# pool = the local labels we know how to map (from the crosswalk table above)
+pool <- crosswalk$local_label
+
+# Build 30 fake condition rows:
+#   patient_id: random IDs from P1000 to P1119
+#   condition:  a random local label from the pool
+cond <- tibble(
+  patient_id = sprintf("P%d", 1000 + sample(0:119, size = 30, replace = TRUE)),
+  condition  = sample(pool, size = 30, replace = TRUE)
+)
+
+# LEFT join: keep every condition row; if a label has no match in the crosswalk,
+# the icd10 / snomed columns will be empty (NA). That is how you find unmapped data.
+coded <- cond |> left_join(crosswalk, by = c("condition" = "local_label"))
+
+cat("Coded conditions (first 8):\n")
+print(as.data.frame(head(coded[, c("patient_id", "condition", "icd10", "snomed")], 8)), row.names = FALSE)
+
+# sum(is.na(...)) counts how many rows failed to get an ICD-10 code.
+# 0 unmapped rows means every local label was in the crosswalk.
+cat("\nUnmapped rows:", sum(is.na(coded$icd10)), "\n")
+```
+
+## 3.4 Code hierarchies
+
+Clinical terminologies are organized as hierarchical structures rather than simple flat lists.
+This means that each individual diagnosis or concept is part of a larger, nested system of groupings.
+
+For example, in the ICD-10 coding system, the hierarchy consists of several levels:
+  - At the highest level are *chapters*, which encompass broad classes of conditions (such as "Diseases of the circulatory system").
+  - Within each chapter are *blocks* or ranges, which group together related categories (e.g., all types of diabetes-related conditions).
+  - Each block contains multiple *categories*, which correspond to more specific disease groupings (e.g., Type 2 diabetes).
+  - Finally, the lowest level includes the actual detailed *codes* that are recorded for patient diagnoses.
+
+SNOMED CT, another widely used terminology, also employs a hierarchy, but it is structured using *is-a* relationships.
+In this system, every specific medical concept is connected "upward" to a more general parent concept (for example, "Type 2 diabetes mellitus" is a type of "Diabetes mellitus",
+which itself is a type of "Endocrine disorder", and so on).
+
+These hierarchical relationships are powerful because they allow us to "roll up" or aggregate more specific codes into broader categories.
+This is essential for analyzing clinical data, creating reports (such as counts by chapter or disease group), and building value sets to identify
+all diagnoses that fall within a certain domain without needing to list every individual code.
+
+```{r}
+# Terminologies are trees, not flat lists. This tiny table shows one ICD-10
+# "family tree" fragment for a few of our codes:
+#
+#   code     = the specific diagnosis (what was recorded)
+#   category = a slightly broader bucket (e.g. E11 = type 2 diabetes)
+#   block    = a range of related categories
+#   chapter  = the high-level grouping used in reports (e.g. "Circulatory")
+#
+# Rolling specific codes UP the tree is how you produce chapter-level counts
+# without writing a separate rule for every detailed code.
+icd_hier <- tribble(
+  ~code,      ~category, ~block,                                  ~chapter,
+  "E11.9",    "E11",     "E08-E13 (Diabetes mellitus)",           "Ch.IV Endocrine/metabolic",
+  "I10",      "I10",     "I10-I16 (Hypertensive diseases)",       "Ch.IX Circulatory",
+  "J45.909",  "J45",     "J40-J4A (Chronic lower respiratory)",   "Ch.X Respiratory",
+  "J20.9",    "J20",     "J00-J06/J20-J22 (Acute respiratory)",   "Ch.X Respiratory"
+)
+icd_hier
+```
+
+```{r}
+# Use the hierarchy to ROLL UP coded diagnoses to chapter level for a report.
+#
+# 1. Join our coded EHR rows with the hierarchy table, matching on ICD-10 code.
+#    "icd10" is the column in `coded`; "code" is the column in icd_hier.
+# 2. count(chapter) counts how many diagnosis rows fall in each chapter.
+report <- coded |>
+  left_join(icd_hier[, c("code", "chapter")], by = c("icd10" = "code")) |>
+  count(chapter, name = "n")
+
+cat("Diagnoses grouped by ICD-10 chapter:\n")
+print(as.data.frame(report), row.names = FALSE)
+```
+
+### Milestone 2 - a SNOMED *is-a* walk
+
+One of SNOMED CT's core strengths is its use of a subsumption (or "is-a") hierarchy.
+In this structure, every specific medical concept (like "Diabetes mellitus type 2") is linked upward to increasingly broader concepts
+(such as "Diabetes mellitus", then "Disorder of endocrine system", ultimately up to "Disease" and then to the topmost root concept).
+This allows us to reason about clinical data at different levels of specificity: for example, we can easily group diagnoses
+by parent concept to answer questions like "how many patients have any kind of diabetes or endocrine disorder?"
+The code fragment below demonstrates a small, hand-constructed example of this hierarchical chaining.
+
+```{r}
+# A named vector: each SNOMED code points to its immediate parent code.
+isa <- c(
+  "44054006"  = "73211009",   # Diabetes mellitus type 2 IS-A Diabetes mellitus
+  "73211009"  = "362969004",  # Diabetes mellitus IS-A Disorder of endocrine system
+  "362969004" = "64572001"    # ... IS-A Disease
+)
+labels <- c(
+  "44054006"  = "Diabetes mellitus type 2",
+  "73211009"  = "Diabetes mellitus",
+  "362969004" = "Disorder of endocrine system",
+  "64572001"  = "Disease"
+)
+
+walk_up <- function(code) {
+  path <- code
+  while (code %in% names(isa)) {
+    code <- isa[[code]]
+    path <- c(path, code)
+  }
+  path
+}
+
+for (c_code in walk_up("44054006")) {
+  cat(sprintf("%-12s %s\n", c_code, labels[[c_code]]))
+}
+```
+
+## 3.5 Value sets
+
+A **value set** is a named, reusable list of codes that defines a clinical idea
+for a specific purpose - e.g. "all codes that count as diabetes." Value sets power
+cohort definitions, quality measures, and decision-support rules.
+
+```{r}
+# A VALUE SET is a named list of codes that means "this clinical idea"
+# for a specific purpose (a quality measure, a cohort, an alert).
+#
+# Real diabetes value sets include hundreds of ICD and SNOMED codes.
+# Ours is tiny on purpose: one ICD code and two SNOMED codes.
+diabetes_valueset <- list(
+  "ICD-10-CM" = c("E11.9"),                 # (real sets include E08-E13.*)
+  "SNOMED CT" = c("44054006", "73211009")   # type 2 diabetes + parent "diabetes mellitus"
+)
+cat("Value set: Diabetes\n")
+for (system in names(diabetes_valueset)) {
+  cat(sprintf("  %s: %s\n", system, paste(diabetes_valueset[[system]], collapse = ", ")))
+}
+
+# Apply it to our coded EHR rows:
+# %in% keeps rows whose icd10 value is in the ICD list of the value set.
+in_set <- coded |> filter(icd10 %in% diabetes_valueset[["ICD-10-CM"]])
+cat(sprintf("\nEHR condition rows matching the Diabetes value set: %d\n", nrow(in_set)))
+
+# length(unique(...)) counts distinct patient IDs (one patient can have several matching rows)
+cat("Distinct patients:", length(unique(in_set$patient_id)), "\n")
+```
+
+## Exercises
+
+1. Add **CPT** codes to the module (e.g. `99213`, `83036`) and describe how a
+   procedure code differs from a diagnosis code.
+2. Extend the crosswalk with a condition the EHR generator can produce but the
+   table currently omits, and confirm the unmapped count drops to zero.
+3. Build a **"respiratory conditions"** value set from the ICD-10 chapter rollup
+   and count matching patients.
+
+## Key takeaways
+
+- Controlled vocabularies replace ambiguous **strings** with stable **codes**.
+- Each system has a job: **ICD** (billing dx), **SNOMED** (clinical meaning),
+  **LOINC** (measurements), **RxNorm** (drugs), **CPT** (procedures).
+- **Crosswalks**, **hierarchies**, and **value sets** are the three moves you'll
+  repeat constantly.
+
+---
+*Next: Module 4 - Health Data Standards and Formats.*

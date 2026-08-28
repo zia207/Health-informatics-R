@@ -1,0 +1,393 @@
+---
+title: "Module 15: Interoperability at Scale and Bulk Data"
+---
+
+![](../../Image/chapter-banner.png)
+
+**Health Informatics in R** · Part IV: Advanced Topics · Module 15 of 16
+
+---
+
+Module 5's FHIR search retrieves one patient at a time — fine for an app, hopeless
+for population analytics across millions of records. This module covers
+**FHIR Bulk Data** (Flat FHIR), the **asynchronous export** pattern, the **NDJSON**
+format it produces, and the network layer: **HIEs** and **TEFCA**.
+
+## Learning objectives
+
+By the end of this module you will be able to:
+
+1. Explain why **bulk export** exists and how it differs from per-resource search.
+2. Describe the **asynchronous kickoff → poll → download** Bulk Data flow.
+3. Produce and parse **NDJSON** (newline-delimited JSON), the bulk export format.
+4. Reassemble bulk NDJSON back into **analytics tables**.
+5. Place **HIEs, QHINs, and TEFCA** in the national interoperability picture.
+
+## Dataset
+
+We convert the synthetic EHR into **FHIR NDJSON** exactly as a `$export` would emit
+it, then parse it back — simulating both ends of a bulk data exchange locally.
+
+```{r}
+#| label: setup
+library(dplyr)
+library(tibble)
+library(jsonlite)
+
+# --- Self-contained synthetic EHR generator (identical to earlier parts) ---
+
+# This function synthesizes a realistic EHR (Electronic Health Record) dataset.
+make_synthetic_ehr <- function(n_patients = 200, seed = 42) {
+  # Use a fixed seed for reproducibility.
+  set.seed(seed)
+  # Define pools of first and last names.
+  first <- c("Ava","Liam","Noah","Mia","Zoe","Omar","Ivan","Sara","Leo","Nina",
+             "Ruth","Kai","Yara","Theo","Ida","Sam","Ana","Eli","Rex","Uma")
+  last  <- c("Khan","Ortiz","Chen","Diaz","Patel","Ali","Brown","Nash","Reed","Vega",
+             "Cole","Frost","Grant","Hale","Iqbal","Jain","Kerr","Lund","Mora","Park")
+  # Randomly assign demographic details to each patient.
+  ages <- sample(18:89, n_patients, replace = TRUE)
+  patients <- tibble(
+    patient_id = sprintf("P%d", 1000 + 0:(n_patients - 1)),   # Unique patient IDs
+    given_name = sample(first, n_patients, replace = TRUE),   # Given names
+    family_name = sample(last, n_patients, replace = TRUE),   # Family (last) names
+    sex = sample(c("male", "female"), n_patients, replace = TRUE, prob = c(0.49, 0.51)),  # Biological sex
+    age = ages,                                                 # Age in years
+    birth_year = 2026 - ages                                    # Calculated birth year (anchor to year 2026)
+  )
+  # Generate encounter ("visit") events for each patient.
+  enc_types <- c("ambulatory", "emergency", "inpatient", "wellness")
+  enc_rows <- vector("list", n_patients)
+  eid <- 0
+  for (i in seq_len(n_patients)) {
+    pid <- patients$patient_id[i]
+    n_enc <- sample(1:4, 1)  # Each patient has 1-4 encounters
+    day <- sample(0:(365 * 3 - 1), n_enc, replace = TRUE)  # Encounter within a 3-year range
+    ids <- sprintf("E%05d", eid + seq_len(n_enc))
+    eid <- eid + n_enc
+    enc_rows[[i]] <- tibble(
+      encounter_id = ids, patient_id = pid,
+      encounter_type = sample(enc_types, n_enc, replace = TRUE, prob = c(0.55, 0.15, 0.10, 0.20)),  # Most visits are ambulatory
+      date = as.Date("2023-01-01") + day  # Random date
+    )
+  }
+  encounters <- bind_rows(enc_rows)
+  # Define common observations (vital signs, labs) and synthesize them for encounters.
+  obs_defs <- tribble(
+    ~observation,               ~unit,   ~lo,  ~hi,
+    "Body height",               "cm",    150,  195,
+    "Body weight",                "kg",    50,   110,
+    "Systolic blood pressure",   "mmHg",  100,  165,
+    "Heart rate",                 "/min",  55,   100,
+    "Hemoglobin A1c",             "%",     4.8,  9.5
+  )
+  obs_rows <- vector("list", nrow(encounters))
+  for (i in seq_len(nrow(encounters))) {
+    e <- encounters[i, ]
+    keep <- runif(nrow(obs_defs)) < 0.7  # 70% chance of having each observation per encounter
+    if (any(keep)) {
+      d <- obs_defs[keep, ]
+      obs_rows[[i]] <- tibble(
+        encounter_id = e$encounter_id, patient_id = e$patient_id,
+        observation = d$observation, value = round(runif(nrow(d), d$lo, d$hi), 1),
+        unit = d$unit, date = e$date
+      )
+    }
+  }
+  observations <- bind_rows(obs_rows) %>%
+    mutate(observation_id = sprintf("O%06d", row_number())) %>%
+    relocate(observation_id)
+  # Assign up to 3 random conditions (problems/diagnoses) to each patient.
+  cond_pool <- c("Essential hypertension", "Type 2 diabetes mellitus", "Asthma",
+                 "Acute bronchitis", "Major depressive disorder", "Osteoarthritis",
+                 "Chronic kidney disease", "Anemia")
+  cond_rows <- vector("list", n_patients)
+  for (i in seq_len(n_patients)) {
+    pid <- patients$patient_id[i]
+    n_c <- sample(0:3, 1)
+    if (n_c > 0) cond_rows[[i]] <- tibble(patient_id = pid, condition = sample(cond_pool, n_c, replace = FALSE))
+  }
+  conditions <- bind_rows(cond_rows) %>%
+    mutate(condition_id = sprintf("C%05d", row_number())) %>%
+    relocate(condition_id)
+  # Assign up to 3 random medications to each patient.
+  med_pool <- c("Lisinopril", "Metformin", "Albuterol", "Atorvastatin", "Sertraline",
+                "Amoxicillin", "Ibuprofen", "Hydrochlorothiazide")
+  med_rows <- vector("list", n_patients)
+  for (i in seq_len(n_patients)) {
+    pid <- patients$patient_id[i]
+    n_m <- sample(0:3, 1)
+    if (n_m > 0) med_rows[[i]] <- tibble(patient_id = pid, medication = sample(med_pool, n_m, replace = FALSE))
+  }
+  medications <- bind_rows(med_rows) %>%
+    mutate(medication_id = sprintf("M%05d", row_number())) %>%
+    relocate(medication_id)
+  # Return the synthetic tables as a list keyed by resource type.
+  list(patients = patients, encounters = encounters, observations = observations,
+       conditions = conditions, medications = medications)
+}
+
+# Generate the synthetic EHR dataset (all tables).
+ehr <- make_synthetic_ehr()
+# Print table names and their respective row counts.
+cat("Tables:", paste(sprintf("%s (%d)", names(ehr), sapply(ehr, nrow)), collapse = ", "), "\n")
+```
+
+## 15.1 Why bulk data
+
+Using per-resource REST (such as `GET /Patient/123`) is highly inefficient for retrieving data about many individuals: pulling a large patient population could require millions of repeated API calls, which is slow and places heavy load on the server.
+
+To solve this, **FHIR Bulk Data** (also known as Flat FHIR) allows exporting entire resource types in a single operation. The server packages data—such as all Patient records, Observations, or Conditions—into compressed **NDJSON** (newline-delimited JSON) files. Each line in these files is a single resource, making them easy to process in parallel or with big data tools.
+
+This capability is foundational for scenarios like population health analysis, clinical quality reporting, and large-scale payer–provider data exchanges, where working with an entire cohort is necessary rather than accessing records one at a time.
+
+## 15.2 The asynchronous export flow
+
+Bulk export in FHIR is designed to be **asynchronous** because exporting large datasets can be resource-intensive and time-consuming, often taking several minutes or more. Rather than tying up server resources and leaving the client waiting for a response, an asynchronous workflow allows efficient handling for both client and server. Here's how the asynchronous export flow works in detail:
+
+1. **Kickoff** — The client initiates the export by making a request such as `GET [base]/$export`, and includes the `Prefer: respond-async` HTTP header. This header signals to the server that the client is willing to receive an asynchronous response.
+2. **Poll for Status** — Instead of immediately returning the full response, the server replies with a `202 Accepted` status and provides a *content-location* header containing the URL where the client can check on the progress of the export job.
+3. **Completion and Manifest** — The client periodically polls the content-location endpoint. Once the job has finished, the server responds with a manifest JSON document describing the output. This manifest lists URLs to one or more NDJSON files, typically one file per resource type (e.g., one for all Patient records, one for Observations, etc.).
+4. **Download NDJSON Files** — The client then downloads the bulk data by retrieving the NDJSON files from the provided URLs. These files contain the exported data, with each line representing a single resource instance as a JSON object.
+
+In this notebook, we simulate the manifest that a server would return at the completion of a bulk data export job.
+
+```{r}
+# This code simulates a FHIR Bulk Data (Flat FHIR) export manifest,
+# which is the response a client receives from the server when a bulk
+# data export job completes. The manifest describes the exported data files.
+
+# The manifest is a list containing:
+#  - "transactionTime": When the export was completed.
+#  - "request": The URL used to initiate the export job.
+#  - "requiresAccessToken": Whether the result URLs require authentication.
+#  - "output": A list of exported resource files, each specifying:
+#       - the resource "type" (e.g., Patient, Observation, Condition)
+#       - and the downloadable "url" for each NDJSON file.
+#  - "error": Any errors (empty in this simulated manifest).
+
+manifest <- list(
+  transactionTime = "2026-08-20T00:00:00Z",
+  request = "https://ehr.example/fhir/$export",
+  requiresAccessToken = TRUE,
+  output = list(
+    list(type = "Patient", url = "https://ehr.example/bulk/Patient.ndjson"),
+    list(type = "Observation", url = "https://ehr.example/bulk/Observation.ndjson"),
+    list(type = "Condition", url = "https://ehr.example/bulk/Condition.ndjson")
+  ),
+  error = list()
+)
+
+# Display the manifest in a readable JSON format
+cat("Bulk export manifest (returned when the async job completes):\n")
+cat(toJSON(manifest, auto_unbox = TRUE, pretty = TRUE))
+```
+
+## 15.3 Producing NDJSON
+
+**NDJSON** stands for Newline Delimited JSON, a format where each line in a text file is a separate JSON object, with no enclosing array or commas between records.
+This approach has several advantages for large-scale data handling:
+- **Efficient Streaming:** Clients and servers can read and write data one object at a time without needing to load the entire file into memory.
+- **Easy Sharding and Parallelism:** Files can be split and processed in chunks by simply dividing on newline characters.
+- **Append-friendly:** New records can easily be appended as new lines.
+For these reasons, FHIR bulk export utilizes NDJSON files to export large collections of resources efficiently.
+In the next cell, we demonstrate how to output FHIR `Patient` resources using the NDJSON format, with each patient represented as a separate line.
+
+```{r}
+# Select the "patients" table from the synthetic EHR dataset.
+patients <- ehr$patients
+
+# Define a function to convert each row of the tibble
+# into a FHIR-compliant Patient resource (nested list).
+to_fhir_patient <- function(row) {
+  list(
+    resourceType = "Patient",
+    id = row$patient_id,
+    name = list(list(
+      family = row$family_name,   # Last name
+      given = list(row$given_name)  # First name as a list
+    )),
+    gender = row$sex,             # HL7/FHIR uses 'gender' field
+    birthDate = sprintf("%d-01-01", row$birth_year)  # Use only the year for privacy
+  )
+}
+
+# Take the first 200 patients. For each, serialize the FHIR resource
+# as a JSON string (one per line), following NDJSON format.
+n_take <- min(200, nrow(patients))
+ndjson_lines <- vapply(seq_len(n_take), function(i) {
+  toJSON(to_fhir_patient(patients[i, ]), auto_unbox = TRUE)
+}, character(1))
+
+# Join lines together with newline characters to form the NDJSON document.
+patient_ndjson <- paste(ndjson_lines, collapse = "\n")
+
+# Display the first 3 NDJSON lines to show the format, and summary stats.
+cat("Patient.ndjson — first 3 lines:\n")
+for (line in head(ndjson_lines, 3)) cat(line, "\n")
+cat(sprintf("...\n%d total resources, %d bytes\n", length(ndjson_lines), nchar(patient_ndjson)))
+```
+
+### Milestone 1 - parse NDJSON back into a table
+
+In this milestone, we'll demonstrate how to read a bulk FHIR NDJSON file, where each line is a JSON-encoded resource—and convert it back into a tabular data frame. This allows us to round-trip structured FHIR data: exporting it using the NDJSON standard, and then parsing it back for analysis or visualization in R.
+
+```{r}
+# Define a function that takes NDJSON text (each line a JSON-encoded Patient resource)
+# and parses it back into a tibble for further analysis or visualization.
+parse_patient_ndjson <- function(text) {
+  # Split the text into lines, strip whitespace, and process each line
+  lines <- strsplit(trimws(text), "\n")[[1]]
+  rows <- lapply(lines, function(line) {
+    # Each line is a JSON string representing a FHIR Patient resource
+    r <- fromJSON(line, simplifyVector = FALSE)
+    # Extract fields of interest from the FHIR structure and save as a tibble row
+    tibble(
+      id = r$id,
+      family = r$name[[1]]$family,      # Family name (last name)
+      given = r$name[[1]]$given[[1]],   # First given name
+      gender = r$gender,                # Gender field
+      birthDate = r$birthDate           # Birth date
+    )
+  })
+  # Return as a tibble for easy manipulation
+  bind_rows(rows)
+}
+
+# Parse the NDJSON (bulk exported) patient data back into a tibble
+parsed <- parse_patient_ndjson(patient_ndjson)
+
+# Display a preview of the round-tripped table and report how many patients were parsed
+cat("Round-tripped NDJSON -> DataFrame:\n")
+print(as.data.frame(head(parsed)), row.names = FALSE)
+cat(sprintf("\nParsed %d patients back from bulk NDJSON.\n", nrow(parsed)))
+```
+
+### Milestone 2 - a mini end-to-end bulk client
+
+This section demonstrates a miniature, end-to-end "bulk client" for FHIR data,
+showing how to handle downloading, parsing, and performing population-level queries
+across large sets of simulated bulk export files.
+
+```{r}
+# --- Explanation of Code for Bulk FHIR Observation Export and Bulk Query ---
+
+# 1. Emit Observations as NDJSON.
+# We take the 'observations' table from our simulated EHR data.
+obs <- ehr$observations
+
+# 2. Define key LOINC codes for common observation types.
+# LOINC codes standardize lab/measurement concepts in FHIR.
+LOINC <- c(
+  "Hemoglobin A1c" = "4548-4",
+  "Systolic blood pressure" = "8480-6",
+  "Heart rate" = "8867-4",
+  "Body weight" = "29463-7",
+  "Body height" = "8302-2"
+)
+
+# 3. Serialize each Observation into a line of NDJSON.
+# Each line is a FHIR Observation resource in JSON, representing a different clinical measurement.
+to_fhir_observation <- function(o) {
+  list(
+    resourceType = "Observation",
+    status = "final",
+    code = list(coding = list(list(
+      system = "http://loinc.org",
+      code = unname(LOINC[o$observation]),
+      display = o$observation
+    ))),
+    subject = list(reference = sprintf("Patient/%s", o$patient_id)),
+    valueQuantity = list(value = o$value, unit = o$unit)
+  )
+}
+
+obs_ndjson <- paste(
+  vapply(seq_len(nrow(obs)), function(i) toJSON(to_fhir_observation(obs[i, ]), auto_unbox = TRUE), character(1)),
+  collapse = "\n"
+)
+
+# 4. Simulate Bulk Download
+bulk_download <- function(manifest_output, local_files) {
+  # Given a manifest describing bulk export files, look up each corresponding
+  # NDJSON string in 'local_files', parse each line as JSON, and
+  # collect them under their FHIR resource type.
+  tables <- list()
+  for (entry in manifest_output) {
+    text <- local_files[[entry$type]]
+    if (!is.null(text)) {
+      # Split NDJSON into a list of JSON objects:
+      lines <- strsplit(trimws(text), "\n")[[1]]
+      tables[[entry$type]] <- lapply(lines, function(l) fromJSON(l, simplifyVector = FALSE))
+    }
+  }
+  tables
+}
+
+# 5. Prepare the 'local' exports (Patient and Observation), representing files you might download in bulk.
+local_files <- list(Patient = patient_ndjson, Observation = obs_ndjson)
+
+# 6. Run the simulated bulk download process,
+# which will fetch and parse the NDJSON back into R objects by type.
+downloaded <- bulk_download(manifest$output, local_files)
+
+# Show counts for each resource type downloaded.
+cat("Downloaded resource counts:",
+    paste(sprintf("%s: %d", names(downloaded), sapply(downloaded, length)), collapse = ", "), "\n")
+
+# 7. Perform a population-level query: compute the mean Hemoglobin A1c value.
+# This emulates an analytic use-case enabled by bulk export.
+a1c_vals <- vapply(downloaded$Observation, function(o) {
+  if (o$code$coding[[1]]$code == "4548-4") o$valueQuantity$value else NA_real_  # LOINC for HbA1c
+}, numeric(1))
+a1c_vals <- a1c_vals[!is.na(a1c_vals)]
+cat(sprintf("Population mean A1c from bulk export: %.2f %% (n=%d)\n", mean(a1c_vals), length(a1c_vals)))
+```
+
+## 15.4 The network layer: HIEs, QHINs, and TEFCA
+
+While bulk data export helps move large volumes of health data within a single organization,
+exchanging data *across* organizations requires a more advanced network infrastructure.
+Here are the main components enabling such nationwide interoperability in the U.S.:
+
+- **HIE (Health Information Exchange)**: These are typically regional networks that facilitate
+  the sharing of clinical data (such as lab results, encounters, and medications) among
+  multiple healthcare providers, hospitals, and health systems. HIEs help reduce duplication,
+  improve care coordination, and enable providers to access patient information regardless
+  of where care was delivered.
+
+- **TEFCA (Trusted Exchange Framework and Common Agreement)**: TEFCA is a federal initiative
+  designed to standardize the rules and technical requirements for health information
+  exchange across the entire country. It provides a "network of networks" by creating a
+  shared trust framework, data sharing policies, and technical standards, ensuring that all
+  participants can rely on common ground rules and interoperability.
+
+- **QHIN (Qualified Health Information Network)**: QHINs are large, certified networks that
+  connect directly to TEFCA. They serve as hubs that link together different HIEs, health
+  systems, payers, and other qualified entities. Once connected, a data request made in one
+  region or network can securely reach and retrieve data from other regions through the mesh
+  created by these QHINs.
+
+**Direction of travel:** With the adoption of modern standards like FHIR and the national
+trust framework of TEFCA, exchanging health information across the U.S. is moving from
+custom-built solutions to standardized, routine interoperability at scale.
+
+## Exercises
+
+1. Add a `Condition` NDJSON stream and extend `bulk_download` to compute condition
+   prevalence across the export.
+2. Implement a **`_since` parameter**: filter the export to resources after a given
+   date (incremental/delta export).
+3. Gzip the NDJSON (base R `gzfile`/`memCompress`) and report the compression ratio —
+   bulk files are always compressed in practice.
+
+## Key takeaways
+
+- **Bulk Data / Flat FHIR** exports whole populations as **NDJSON**, unlike chatty
+  per-resource search.
+- The flow is **async**: kickoff → poll → manifest → download.
+- **NDJSON** streams and shards; parsing it back yields analytics tables.
+- **HIEs, QHINs, and TEFCA** carry exchange *across* organizations nationwide.
+
+---
+*Next: Module 16 - Emerging Directions.*

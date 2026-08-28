@@ -1,0 +1,534 @@
+---
+title: "Module 13:  Claims Data Analysis"
+---
+
+![](../../Image/chapter-banner.png)
+
+**Health Informatics in R** · Part IV: Advanced Topics · Module 13 of 16
+
+---
+
+Clinical informatics records *care*. **Claims data** records *payment* — the
+structured bills providers send payers after a visit, stay, or fill. This module
+treats claims as an informatics data type: what they contain, how they are coded
+and classified, how to clean them, and how to roll them up into **member-level**
+cost, risk, and quality measures.
+
+## Learning objectives
+
+By the end of this module you will be able to:
+
+1. Describe a **claim** (who, what, why, where, how much) and how it differs from an EHR.
+2. Map claim codes to **classification systems** (ICD-10, CPT, HCC, DRG).
+3. **Clean** raw claims: duplicates, adjudication status, financial integrity.
+4. Build **member-level features**: PMPM, HCC risk score, Charlson index, utilization.
+5. **Risk-stratify** a population and compute a simple **care-gap** (HEDIS-like) measure.
+
+## Dataset
+
+A synthetic **Medicare Advantage–style book**: an **eligibility** file (members)
+and a **claims** file (service-level rows with ICD-10, CPT, place of service, and
+billed / allowed / paid amounts). We inject duplicate claims and a few dirty
+values so the cleaning step has something to do. No real patients or payers.
+
+```{r}
+#| label: setup
+library(dplyr)
+library(tibble)
+library(ggplot2)
+
+# --- Self-contained synthetic claims generator ---
+
+# Eligibility file + service-level claims for a fake MA-style plan.
+make_synthetic_claims <- function(n_members = 400, n_claims = 2400, seed = 42) {
+  set.seed(seed)
+
+  # 1. Member eligibility (who is covered, and for how many months)
+  members <- tibble(
+    member_id = sprintf("M%d", 1000 + 0:(n_members - 1)),
+    age = sample(45:89, n_members, replace = TRUE),
+    sex = sample(c("male", "female"), n_members, replace = TRUE, prob = c(0.47, 0.53)),
+    region = sample(c("Northeast", "Southeast", "Midwest", "West"), n_members, replace = TRUE),
+    plan_type = sample(c("HMO", "PPO", "PFFS"), n_members, replace = TRUE, prob = c(0.50, 0.35, 0.15)),
+    enroll_months = sample(6:12, n_members, replace = TRUE)
+  )
+  # Chronic flags with roughly realistic prevalence (used to bias claim codes)
+  members$has_diabetes     <- rbinom(n_members, 1, 0.22)
+  members$has_chf          <- rbinom(n_members, 1, 0.10)
+  members$has_copd         <- rbinom(n_members, 1, 0.12)
+  members$has_ckd          <- rbinom(n_members, 1, 0.14)
+  members$has_depression   <- rbinom(n_members, 1, 0.16)
+  members$has_hypertension <- rbinom(n_members, 1, 0.45)
+  members$has_cancer       <- rbinom(n_members, 1, 0.06)
+
+  # Inject a few dirty eligibility values (~4%)
+  n_bad <- max(8, n_members %/% 25)
+  bad <- sample(seq_len(n_members), n_bad, replace = FALSE)
+  half <- length(bad) %/% 2
+  members$age[bad[seq_len(half)]] <- NA
+  members$sex[bad[(half + 1):length(bad)]] <- "U"
+
+  # 2. Code dictionaries: diagnosis (why) and procedure (what)
+  icd <- c(
+    "E11.9" = "Type 2 diabetes without complications",
+    "I50.32" = "Chronic systolic heart failure",
+    "J44.9" = "COPD, unspecified",
+    "N18.3" = "CKD stage 3",
+    "F32.9" = "Major depressive disorder, unspecified",
+    "I10" = "Essential hypertension",
+    "Z12.11" = "Encounter for screening for malignant neoplasm of colon",
+    "M54.5" = "Low back pain",
+    "J06.9" = "Acute upper respiratory infection",
+    "Z00.00" = "Encounter for general adult medical examination"
+  )
+  cpt_desc <- c(
+    "99213" = "Office visit, established", "99214" = "Office visit, moderate complexity",
+    "99283" = "ED visit, moderate", "99285" = "ED visit, high severity",
+    "99232" = "Subsequent hospital care", "93306" = "Echocardiogram",
+    "71046" = "Chest X-ray, 2 views", "82947" = "Glucose, quantitative",
+    "36415" = "Venipuncture", "27447" = "Total knee arthroplasty"
+  )
+  cpt_price <- c(
+    "99213" = 150, "99214" = 250, "99283" = 1200, "99285" = 2500, "99232" = 180,
+    "93306" = 800, "71046" = 300, "82947" = 50, "36415" = 25, "27447" = 15000
+  )
+  pos <- c("11" = "Office", "21" = "Inpatient hospital",
+           "23" = "Emergency room", "22" = "Outpatient hospital", "81" = "Laboratory")
+
+  # Condition -> likely primary ICD (so coded claims track the member flags)
+  cond_icd <- c(has_diabetes = "E11.9", has_chf = "I50.32", has_copd = "J44.9",
+                has_ckd = "N18.3", has_depression = "F32.9",
+                has_hypertension = "I10", has_cancer = "Z12.11")
+  icd_keys <- names(icd)
+  cpt_keys <- names(cpt_desc)
+  pos_keys <- names(pos)
+
+  pick_icd <- function(mid) {
+    idx <- match(mid, members$member_id)
+    flags <- names(cond_icd)
+    active <- flags[vapply(flags, function(f) members[[f]][idx] == 1, logical(1))]
+    coded <- unname(cond_icd[active])
+    if (length(coded) > 0 && runif(1) < 0.65) {
+      return(sample(coded, 1))
+    }
+    sample(icd_keys, 1)
+  }
+
+  # 3. Service-level claims
+  member_ids <- sample(members$member_id, n_claims, replace = TRUE)
+  cpt_drawn <- sample(cpt_keys, n_claims, replace = TRUE)
+  billed <- cpt_price[cpt_drawn] * runif(n_claims, 0.85, 1.40)
+  allowed <- billed * runif(n_claims, 0.55, 0.80)
+  paid <- allowed * runif(n_claims, 0.70, 0.95)
+  start <- as.Date("2023-01-01")
+  svc <- start + sample(0:363, n_claims, replace = TRUE)
+
+  claims <- tibble(
+    claim_id = sprintf("CLM%06d", seq_len(n_claims)),
+    member_id = member_ids,
+    service_date = svc,
+    icd10_primary = vapply(member_ids, pick_icd, character(1)),
+    cpt_code = cpt_drawn,
+    place_of_service = sample(pos_keys, n_claims, replace = TRUE, prob = c(0.45, 0.12, 0.12, 0.18, 0.13)),
+    billed_amount = round(billed, 2),
+    allowed_amount = round(allowed, 2),
+    paid_amount = round(paid, 2),
+    provider_npi = floor(runif(n_claims, 1000000000, 2000000000)),
+    claim_status = sample(c("Paid", "Denied", "Pending"), n_claims, replace = TRUE, prob = c(0.88, 0.08, 0.04))
+  )
+
+  # ~72% of diabetic members get at least one glucose test so the HEDIS-like gap is realistic
+  dm_ids <- members$member_id[members$has_diabetes == 1]
+  for (mid in dm_ids) {
+    if (runif(1) < 0.72) {
+      hit <- which(claims$member_id == mid)
+      if (length(hit)) {
+        pickrow <- if (length(hit) == 1) hit else sample(hit, 1)
+        claims$cpt_code[pickrow] <- "82947"
+      }
+    }
+  }
+
+  # Inject ~3% duplicate submissions (same member / date / CPT / billed)
+  n_dup <- floor(0.03 * n_claims)
+  dup_idx <- sample(seq_len(n_claims), n_dup, replace = FALSE)
+  claims <- bind_rows(claims, claims[dup_idx, ])
+
+  list(members = members, claims = claims, icd = icd, cpt_desc = cpt_desc, cpt_price = cpt_price, pos = pos)
+}
+
+book <- make_synthetic_claims()
+members <- book$members
+claims <- book$claims
+cat(sprintf("Tables: members (%d), claims (%d including duplicates)\n", nrow(members), nrow(claims)))
+cat("Date range:", format(min(claims$service_date)), "→", format(max(claims$service_date)), "\n")
+status_counts <- table(claims$claim_status)
+cat("Claim statuses:", paste(sprintf("'%s': %d", names(status_counts), as.integer(status_counts)), collapse = ", "), "\n")
+```
+
+## 13.1 What claim data is (and is not)
+
+A **claim** is the structured record a provider submits to a payer (commercial
+insurer, Medicare, Medicaid) to request **reimbursement for services already
+delivered**.
+
+```
+Patient receives care → provider submits a claim → payer adjudicates → claim is recorded
+```
+
+| Layer | What it captures |
+|---|---|
+| **Patient / member** | ID, age, sex, geography, eligibility months |
+| **Provider** | NPI, specialty, facility |
+| **Clinical (coded)** | ICD-10 *why*, CPT/HCPCS *what*, revenue codes |
+| **Financial** | Billed, allowed, paid, member cost-share |
+| **Context** | Dates, place of service, claim status (paid / denied / pending) |
+
+**Claim types.** Professional (CMS-1500, office visits), institutional (UB-04,
+hospital stays), pharmacy (NCPDP), dental.
+
+**Why informatics cares.** Claims are how ICD and CPT *travel* through the
+payment system (Module 3). They are also the main administrative feed into
+warehouses (Module 14), population programs (Module 12), and risk adjustment.
+
+**Limits.** Claims are **not** the medical record. They lack vitals, labs,
+notes, and often secondary diagnoses. They are billing-driven, lagged (days to
+months), and sensitive to how providers code. Use them for *what was billed and
+paid*, not as a substitute for clinical truth.
+
+## 13.2 Anatomy of a claim line
+
+Each row below is one **service line**: a coded reason (ICD), a coded service
+(CPT), a setting (place of service), and three dollar amounts. Payers typically
+keep **paid** claims for analytics; denied and pending rows stay in operational
+queues.
+
+```{r}
+# Peek at a few raw claim lines and decode CPT / POS for readability
+sample_rows <- head(claims, 8)
+sample_rows$cpt_desc <- book$cpt_desc[sample_rows$cpt_code]
+sample_rows$pos_desc <- book$pos[sample_rows$place_of_service]
+cols <- c("claim_id", "member_id", "service_date", "icd10_primary",
+          "cpt_code", "cpt_desc", "pos_desc", "billed_amount",
+          "allowed_amount", "paid_amount", "claim_status")
+print(as.data.frame(sample_rows[, cols]), row.names = FALSE)
+```
+
+## 13.3 Classification tools on claims
+
+Claims do not store "this patient is high risk" as a field. Analysts **group**
+raw codes into payment and risk categories. Module 3 introduced the codes; here
+they become *groupers*.
+
+| Tool | Setting | Job on a claim |
+|---|---|---|
+| **ICD-10-CM** | All | Diagnosis / reason for visit |
+| **CPT / HCPCS** | Outpatient / professional | Procedure / service billed |
+| **MS-DRG** | Inpatient | Bundled hospital payment per stay |
+| **HCC** | Medicare Advantage | Risk-adjust capitation from diagnoses |
+| **CCI / LACE** | All | Comorbidity / readmission risk from codes |
+
+**HCC (Hierarchical Condition Categories)** collapse related ICD codes into
+categories that predict next-year cost. A higher HCC score means a sicker
+member and, under Medicare Advantage, a higher payment to the plan. The weights
+below are **educational approximations**, not the CMS model.
+
+```{r}
+# Educational ICD-10 -> HCC crosswalk (NOT the official CMS-HCC model)
+hcc_map <- tibble(
+  icd10 = c("E11.9", "I10", "J44.9", "N18.3", "F32.9", "I50.32", "Z12.11", "J06.9"),
+  description = c(
+    "Type 2 diabetes without complications",
+    "Essential hypertension",
+    "COPD, unspecified",
+    "CKD stage 3",
+    "Major depression, unspecified",
+    "Chronic systolic HF",
+    "Colon cancer screening (no HCC)",
+    "Acute URI (acute — usually no HCC)"
+  ),
+  hcc = c("HCC19", "HCC85", "HCC111", "HCC137", "HCC59", "HCC85", NA, NA),
+  weight = c(0.318, 0.302, 0.335, 0.289, 0.309, 0.368, NA, NA)
+)
+cat("ICD-10 codes on this book's claims, with a toy HCC mapping\n")
+print(as.data.frame(hcc_map), row.names = FALSE)
+```
+
+## 13.4 Cleaning and validating claims
+
+Production claims are messy: **duplicates** (resubmits), **reversals**, mixed
+**adjudication status**, missing demographics, and amounts that violate
+`paid ≤ allowed ≤ billed`. Analytics almost always start from **paid** claims
+after those checks — the same data-quality instinct as Module 8, applied to
+administrative data.
+
+```{r}
+raw_n <- nrow(claims)
+
+# 1. Drop duplicate submissions (same member, date, CPT, billed amount)
+claims_clean <- claims %>%
+  distinct(member_id, service_date, cpt_code, billed_amount, .keep_all = TRUE)
+cat(sprintf("Duplicates removed: %s\n", format(raw_n - nrow(claims_clean), big.mark = ",")))
+
+# 2. Keep paid claims for cost / utilization analytics
+claims_clean <- claims_clean %>% filter(claim_status == "Paid")
+cat(sprintf("After status filter (Paid only): %s\n", format(nrow(claims_clean), big.mark = ",")))
+
+# 3. Repair eligibility: numeric age, recode unknown sex
+members_clean <- members
+members_clean$age <- suppressWarnings(as.numeric(members_clean$age))
+members_clean$age[is.na(members_clean$age)] <- median(members_clean$age, na.rm = TRUE)
+members_clean$age <- as.integer(pmin(pmax(members_clean$age, 0), 110))
+members_clean$sex <- ifelse(members_clean$sex == "U", "female", members_clean$sex)
+
+# 4. Financial integrity: paid cannot exceed allowed
+over <- claims_clean$paid_amount > claims_clean$allowed_amount
+claims_clean$paid_amount[over] <- claims_clean$allowed_amount[over]
+cat(sprintf("Paid>allowed rows capped: %s\n", format(sum(over), big.mark = ",")))
+
+claims_clean <- claims_clean %>% filter(paid_amount >= 0)
+cat(sprintf("Clean claims: %s | clean members: %s\n",
+            format(nrow(claims_clean), big.mark = ","), format(nrow(members_clean), big.mark = ",")))
+```
+
+## 13.5 Member-level features: PMPM, HCC, utilization
+
+A claim is a **transaction**. Care management and risk models need a **member**.
+We aggregate paid claims to one row per member:
+
+| Feature | Meaning |
+|---|---|
+| **PMPM** | Paid amount ÷ enrollment months — the core actuarial unit |
+| **HCC score** | Age/sex baseline + weights for coded chronic conditions |
+| **CCI** | Weighted comorbidity count (Charlson-style) |
+| **Utilization** | ER, inpatient, and office visits from place of service |
+
+Normalizing HCC so the book average is **1.0** is how plans talk about "sicker
+than average" (score > 1) versus "healthier" (score < 1).
+
+```{r}
+# Join paid claims to eligibility, then roll up to the member
+df <- claims_clean %>% left_join(members_clean, by = "member_id")
+
+member_feat <- df %>%
+  group_by(member_id) %>%
+  summarize(
+    total_paid = sum(paid_amount),
+    n_claims = n(),
+    n_icd = n_distinct(icd10_primary),
+    n_providers = n_distinct(provider_npi),
+    er_visits = sum(place_of_service == "23"),
+    ip_visits = sum(place_of_service == "21"),
+    office_visits = sum(place_of_service == "11"),
+    .groups = "drop"
+  )
+
+member_feat <- member_feat %>% left_join(members_clean, by = "member_id")
+member_feat$enroll_months <- pmax(member_feat$enroll_months, 1)
+member_feat$pmpm <- round(member_feat$total_paid / member_feat$enroll_months, 2)
+
+# Toy HCC: age/sex factor + condition weights (educational, not CMS)
+hcc_w <- c(has_diabetes = 0.318, has_chf = 0.368, has_copd = 0.335,
+           has_ckd = 0.289, has_depression = 0.309, has_hypertension = 0.118,
+           has_cancer = 0.450)
+
+age_sex_factor <- function(age, sex) {
+  base <- 0.28 + age * 0.007
+  if (sex == "female" && age >= 65) base <- base + 0.04
+  round(base, 3)
+}
+
+member_feat$age_sex <- mapply(age_sex_factor, member_feat$age, member_feat$sex)
+member_feat$hcc_raw <- round(
+  member_feat$age_sex + Reduce(`+`, lapply(names(hcc_w), function(c) member_feat[[c]] * hcc_w[[c]])),
+  3
+)
+member_feat$hcc <- round(member_feat$hcc_raw / mean(member_feat$hcc_raw), 3)
+
+# Simplified Charlson weights on the same flags
+cci_w <- c(has_diabetes = 1, has_chf = 1, has_copd = 1, has_ckd = 2, has_cancer = 2)
+member_feat$cci <- Reduce(`+`, lapply(names(cci_w), function(c) member_feat[[c]] * cci_w[[c]]))
+cond_cols <- names(hcc_w)
+member_feat$n_chronic <- rowSums(member_feat[, cond_cols])
+
+cat(sprintf("Members with claims: %s\n", format(nrow(member_feat), big.mark = ",")))
+cat(sprintf("Mean PMPM: $%s\n", formatC(mean(member_feat$pmpm), format = "f", digits = 2, big.mark = ",")))
+cat(sprintf("Mean HCC (normalized): %.3f  (1.0 = book average)\n", mean(member_feat$hcc)))
+cat(sprintf("Mean CCI: %.2f\n", mean(member_feat$cci)))
+cat(sprintf("Total ER visits: %s\n", format(sum(member_feat$er_visits), big.mark = ",")))
+print(as.data.frame(head(member_feat[, c("member_id", "age", "pmpm", "hcc", "cci", "n_chronic")])), row.names = FALSE)
+```
+
+### Milestone 1 — risk stratification
+
+Care programs do not treat every member the same. A simple **rule engine**
+combines HCC, inpatient use, and ER use into four tiers — the same pattern as
+the CDS rule engine in Module 11, now at **population** scale.
+
+| Tier | Rule of thumb | Typical action |
+|---|---|---|
+| 4 Critical | HCC ≥ 1.8 or IP ≥ 3 or ER ≥ 4 | Intensive case management |
+| 3 High | HCC ≥ 1.2 or IP ≥ 1 or ER ≥ 2 | Care-manager outreach |
+| 2 Rising | HCC ≥ 0.9 or 2+ chronic conditions | Prevention / coaching |
+| 1 Low | Everyone else | Wellness |
+
+```{r}
+assign_tier <- function(hcc, er, ip, n_chronic) {
+  if (hcc >= 1.8 || ip >= 3 || er >= 4) return("4 - Critical")
+  if (hcc >= 1.2 || ip >= 1 || er >= 2) return("3 - High")
+  if (hcc >= 0.9 || n_chronic >= 2) return("2 - Rising")
+  "1 - Low"
+}
+member_feat$risk_tier <- mapply(assign_tier, member_feat$hcc, member_feat$er_visits,
+                                 member_feat$ip_visits, member_feat$n_chronic)
+
+# Disease registries from the same flags (claims-derived cohorts)
+member_feat$registry_diabetes <- member_feat$has_diabetes == 1
+member_feat$registry_chf <- member_feat$has_chf == 1
+member_feat$registry_copd <- member_feat$has_copd == 1
+
+tier <- member_feat %>%
+  group_by(risk_tier) %>%
+  summarize(members = n(), total_paid = sum(total_paid), mean_pmpm = mean(pmpm), .groups = "drop")
+tier$cost_share_pct <- round(tier$total_paid / sum(tier$total_paid) * 100, 1)
+cat("Risk-tier distribution\n")
+print(as.data.frame(tier), row.names = FALSE)
+cat(sprintf("\nRegistries: diabetes %d | CHF %d | COPD %d\n",
+            sum(member_feat$registry_diabetes), sum(member_feat$registry_chf), sum(member_feat$registry_copd)))
+```
+
+```{r}
+#| label: fig-risk-tiers
+#| fig-width: 9
+#| fig-height: 3.8
+order_tiers <- c("1 - Low", "2 - Rising", "3 - High", "4 - Critical")
+colors <- c("1 - Low" = "#55A868", "2 - Rising" = "#4C72B0",
+            "3 - High" = "#DD8452", "4 - Critical" = "#C44E52")
+
+counts_df <- tibble(risk_tier = factor(order_tiers, levels = rev(order_tiers)))
+counts_df$members <- sapply(as.character(counts_df$risk_tier), function(t) sum(member_feat$risk_tier == t))
+
+# Panel 1: members by risk tier
+ggplot(counts_df, aes(x = members, y = risk_tier, fill = risk_tier)) +
+  geom_col() +
+  scale_fill_manual(values = colors, guide = "none") +
+  labs(x = "members", y = NULL, title = "Members by risk tier") +
+  theme_minimal(base_size = 11)
+```
+
+```{r}
+#| label: fig-paid-share
+#| fig-width: 6
+#| fig-height: 4.2
+# Panel 2: share of paid amount by risk tier
+paid_df <- member_feat %>%
+  group_by(risk_tier) %>%
+  summarize(total_paid = sum(total_paid), .groups = "drop") %>%
+  right_join(tibble(risk_tier = order_tiers), by = "risk_tier") %>%
+  mutate(total_paid = ifelse(is.na(total_paid), 0, total_paid),
+         risk_tier = factor(risk_tier, levels = order_tiers))
+paid_df$pct <- paid_df$total_paid / sum(paid_df$total_paid) * 100
+paid_df$label <- sprintf("%.0f%%", paid_df$pct)
+
+ggplot(paid_df, aes(x = "", y = total_paid, fill = risk_tier)) +
+  geom_col(width = 1, color = "white") +
+  coord_polar(theta = "y") +
+  scale_fill_manual(values = colors, name = NULL) +
+  geom_text(aes(label = label), position = position_stack(vjust = 0.5), size = 3.2) +
+  labs(title = "Share of paid amount", x = NULL, y = NULL) +
+  theme_void(base_size = 11)
+```
+
+## 13.6 Quality measures and care gaps (HEDIS-like)
+
+**HEDIS**-style measures ask: of the members who *should* have received a
+service, what share *did*? Numerators and denominators are built from claims
+(and sometimes pharmacy or labs). Members in the denominator but not the
+numerator are a **care gap** — an outreach list.
+
+Here the denominator is members with diabetes on file; the numerator is those
+with at least one **glucose test (CPT 82947)** in the year — a simplified
+stand-in for HbA1c testing, not a certified HEDIS engine.
+
+```{r}
+# Denominator: members flagged with diabetes
+diabetics <- unique(member_feat$member_id[member_feat$has_diabetes == 1])
+
+# Numerator: at least one glucose test billed in the year
+tested <- unique(claims_clean$member_id[claims_clean$cpt_code == "82947"])
+tested_diabetics <- intersect(diabetics, tested)
+
+rate <- if (length(diabetics) > 0) length(tested_diabetics) / length(diabetics) else NA_real_
+benchmark <- 0.80  # illustrative national-style target, not a real HEDIS rate
+gap <- rate - benchmark
+
+cat(sprintf("Diabetes denominator: %d\n", length(diabetics)))
+cat(sprintf("With ≥1 glucose test (CPT 82947): %d\n", length(tested_diabetics)))
+cat(sprintf("Testing rate: %.1f%%  |  benchmark: %.0f%%  |  gap: %+.1f%%\n", rate * 100, benchmark * 100, gap * 100))
+
+care_gap <- member_feat %>%
+  filter(member_id %in% setdiff(diabetics, tested)) %>%
+  select(member_id, age, pmpm, hcc, risk_tier) %>%
+  arrange(desc(pmpm))
+
+cat(sprintf("\nCare gap: %d diabetic members with no glucose test on file\n", nrow(care_gap)))
+cat("Highest-PMPM gaps (outreach priority):\n")
+print(as.data.frame(head(care_gap, 8)), row.names = FALSE)
+```
+
+```{r}
+#| label: fig-hedis-benchmark
+#| fig-width: 6.5
+#| fig-height: 3.6
+# Visual: plan rate vs an illustrative benchmark
+plotdf <- tibble(
+  group = factor(c("Plan (claims)", "Benchmark"), levels = c("Plan (claims)", "Benchmark")),
+  value = c(rate * 100, benchmark * 100)
+)
+ggplot(plotdf, aes(x = group, y = value, fill = group)) +
+  geom_col(width = 0.45) +
+  geom_hline(yintercept = benchmark * 100, color = "#C44E52", linetype = "dashed", linewidth = 0.8) +
+  scale_fill_manual(values = c("Plan (claims)" = "#4C72B0", "Benchmark" = "#8C8C8C"), guide = "none") +
+  ylim(0, 100) +
+  labs(x = NULL, y = "percent of diabetics tested",
+       title = "HEDIS-like: glucose testing among members with diabetes") +
+  theme_minimal(base_size = 11)
+```
+
+## 13.7 Claims next to the EHR
+
+Claims and EHR data answer different questions. Informatics pipelines often
+**join** them (eligibility + claims + clinical) inside a warehouse — the subject
+of the next module.
+
+| | Claims | EHR |
+|---|---|---|
+| **Unit** | Billable service | Clinical encounter / observation |
+| **Strength** | Complete for billed care; cost; population coverage | Vitals, labs, notes, orders |
+| **Weakness** | Billing-driven, lagged, thin clinically | Incomplete across sites; not built for payment |
+| **Typical use** | PMPM, HCC, HEDIS, fraud, network | CDS, quality of *documented* care, phenotyping |
+
+The data-scientist workflow on a claims book is: **acquire → clean → feature
+(PMPM, HCC, CCI) → classify / risk-stratify → quality gaps → action**. This
+module ran the middle of that pipeline on synthetic data. Production work adds
+837/835 EDI, pharmacy claims, official groupers, and actuarial sign-off.
+
+## Exercises
+
+1. Recompute **PMPM using allowed amount** instead of paid. How much does the
+   book average move, and why would a plan care?
+2. Build an **age-banded** table of mean HCC and mean PMPM (a standard actuarial
+   cut). Does cost rise smoothly with age in this synthetic book?
+3. Define a second care gap — e.g. members with hypertension (`I10`) and **no
+   office visit** (POS `11`) — and list the highest-PMPM members in the gap.
+
+## Key takeaways
+
+- **Claims** are the financial/administrative backbone of US healthcare, not a
+  substitute for the EHR.
+- **ICD, CPT, HCC, DRG** are how a bill becomes a comparable, groupable record.
+- Analytics run on **cleaned paid claims** rolled up to the **member-month**.
+- **PMPM + HCC + utilization** feed risk tiers, registries, and HEDIS-like gaps.
+
+---
+*Next: Module 14 - Clinical Data Warehousing and Analytics-Ready Data.*

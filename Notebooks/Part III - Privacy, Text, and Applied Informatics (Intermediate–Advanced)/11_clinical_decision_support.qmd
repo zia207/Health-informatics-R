@@ -1,0 +1,568 @@
+---
+title: "Module 11: Clinical Decision Support Systems"
+---
+
+![](../../Image/chapter-banner.png)
+
+**Health Informatics in R** · Part III: Privacy, Text & Applied Informatics · Module 11 of 16
+
+---
+
+**Clinical Decision Support (CDS)** delivers the right knowledge to the right
+person at the right point in the workflow — a screening reminder, a drug-interaction
+warning, a risk score. This is where informatics meets the point of care. This
+module builds a rule engine over the synthetic EHR, computes a risk score, packages
+alerts as **CDS Hooks** cards, and confronts **alert fatigue**.
+
+## Learning objectives
+
+By the end of this module you will be able to:
+
+1. Describe the **"Five Rights"** of CDS and contrast **rule-based** vs **model-driven** support.
+2. Represent clinical rules as data/functions and **run them over a cohort**.
+3. Compute a simple **risk score** and stratify patients.
+4. Package alerts as **CDS Hooks cards** for delivery through a FHIR-based EHR.
+5. Measure and mitigate **alert fatigue** through prioritization and suppression.
+
+## Dataset
+
+The synthetic EHR. We build a per-patient **feature view** (age, latest systolic BP,
+active conditions, current medications, most recent A1c), the exact input a CDS
+rule engine consumes.
+
+```{r}
+#| message: false
+# --- Self-contained synthetic EHR generator (identical to Parts I-II) ---
+library(dplyr)
+library(tibble)
+
+# This function creates a synthetic (fake) Electronic Health Record (EHR) dataset for demonstration and learning purposes.
+make_synthetic_ehr <- function(n_patients = 200, seed = 42) {
+  set.seed(seed)  # Random seed for reproducibility
+
+  # 1. Generate basic patient demographic info (IDs, names, sex, age, birth year)
+  first <- c("Ava","Liam","Noah","Mia","Zoe","Omar","Ivan","Sara","Leo","Nina",
+             "Ruth","Kai","Yara","Theo","Ida","Sam","Ana","Eli","Rex","Uma")
+  last  <- c("Khan","Ortiz","Chen","Diaz","Patel","Ali","Brown","Nash","Reed","Vega",
+             "Cole","Frost","Grant","Hale","Iqbal","Jain","Kerr","Lund","Mora","Park")
+  ages <- sample(18:89, size = n_patients, replace = TRUE)
+  patients <- tibble(
+    patient_id = sprintf("P%d", 1000 + 0:(n_patients - 1)),
+    given_name = sample(first, size = n_patients, replace = TRUE),
+    family_name = sample(last, size = n_patients, replace = TRUE),
+    sex = sample(c("male", "female"), size = n_patients, replace = TRUE, prob = c(0.49, 0.51)),
+    age = ages,
+    birth_year = 2026 - ages
+  )
+
+  # 2. Simulate multiple encounters (visits, admissions) for each patient
+  enc_types <- c("ambulatory", "emergency", "inpatient", "wellness")
+  enc_rows <- list()
+  for (pid in patients$patient_id) {
+    n_enc <- sample(1:4, 1)  # Each patient has 1 to 4 encounters
+    for (i in seq_len(n_enc)) {
+      day <- sample(0:(365 * 3 - 1), 1)  # Random date over 3 years
+      enc_rows[[length(enc_rows) + 1]] <- tibble(
+        encounter_id = sprintf("E%05d", length(enc_rows) + 1),
+        patient_id = pid,
+        encounter_type = sample(enc_types, 1, prob = c(0.55, 0.15, 0.10, 0.20)),
+        date = as.Date("2023-01-01") + day
+      )
+    }
+  }
+  encounters <- bind_rows(enc_rows)
+
+  # 3. Create sets of clinical observations (height, weight, etc.) for each encounter
+  obs_defs <- list(
+    list(name = "Body height", unit = "cm", lo = 150, hi = 195),
+    list(name = "Body weight", unit = "kg", lo = 50, hi = 110),
+    list(name = "Systolic blood pressure", unit = "mmHg", lo = 100, hi = 165),
+    list(name = "Heart rate", unit = "/min", lo = 55, hi = 100),
+    list(name = "Hemoglobin A1c", unit = "%", lo = 4.8, hi = 9.5)
+  )
+  obs_rows <- list()
+  for (i in seq_len(nrow(encounters))) {
+    e <- encounters[i, ]
+    for (od in obs_defs) {
+      if (runif(1) < 0.7) {  # About 70% of encounters have each observation
+        obs_rows[[length(obs_rows) + 1]] <- tibble(
+          observation_id = sprintf("O%06d", length(obs_rows) + 1),
+          encounter_id = e$encounter_id,
+          patient_id = e$patient_id,
+          observation = od$name,
+          value = round(runif(1, od$lo, od$hi), 1),
+          unit = od$unit,
+          date = e$date
+        )
+      }
+    }
+  }
+  observations <- bind_rows(obs_rows)
+
+  # 4. Assign random conditions (diagnoses) to each patient
+  cond_pool <- c("Essential hypertension", "Type 2 diabetes mellitus", "Asthma",
+                 "Acute bronchitis", "Major depressive disorder", "Osteoarthritis",
+                 "Chronic kidney disease", "Anemia")
+  cond_rows <- list()
+  for (pid in patients$patient_id) {
+    # Each patient can have 0-3 conditions
+    n_cond <- sample(0:3, 1)
+    if (n_cond > 0) {
+      cs <- sample(cond_pool, size = n_cond, replace = FALSE)
+      for (c in cs) {
+        cond_rows[[length(cond_rows) + 1]] <- tibble(
+          condition_id = sprintf("C%05d", length(cond_rows) + 1),
+          patient_id = pid, condition = c
+        )
+      }
+    }
+  }
+  conditions <- bind_rows(cond_rows)
+
+  # 5. Assign random medications to each patient
+  med_pool <- c("Lisinopril", "Metformin", "Albuterol", "Atorvastatin", "Sertraline",
+                "Amoxicillin", "Ibuprofen", "Hydrochlorothiazide")
+  med_rows <- list()
+  for (pid in patients$patient_id) {
+    # Each patient can have 0-3 medications
+    n_med <- sample(0:3, 1)
+    if (n_med > 0) {
+      ms <- sample(med_pool, size = n_med, replace = FALSE)
+      for (m in ms) {
+        med_rows[[length(med_rows) + 1]] <- tibble(
+          medication_id = sprintf("M%05d", length(med_rows) + 1),
+          patient_id = pid, medication = m
+        )
+      }
+    }
+  }
+  medications <- bind_rows(med_rows)
+
+  # 6. Return all pieces as a list of data frames
+  list(
+    patients = patients,
+    encounters = encounters,
+    observations = observations,
+    conditions = conditions,
+    medications = medications
+  )
+}
+
+# Create an EHR dataset and print table sizes
+ehr <- make_synthetic_ehr()
+cat("Tables:", paste(sprintf("%s (%d)", names(ehr), sapply(ehr, nrow)), collapse = ", "), "\n")
+```
+
+## 11.1 The Five Rights of CDS
+
+Effective Clinical Decision Support (CDS) delivers interventions by closely adhering to the "Five Rights" framework:
+
+1. **The right information:** Relevant, evidence-based guidance or data, such as clinical recommendations or alerts about abnormal values.
+2. **To the right person:** Presented to the appropriate member of the care team—this could be a physician, nurse, pharmacist, or even the patient.
+3. **In the right format:** The CDS can be shown as an alert, order set, documentation template, reference information, or other context-sensitive format appropriate to the workflow.
+4. **Through the right channel:** Delivered within the system or application where the recipient is working—most commonly within the EHR, but sometimes via mobile apps, pagers, or verbal alerts.
+5. **At the right point in workflow:** Provided at a time when it can make a difference, such as when entering orders, reviewing results, or during a clinical encounter.
+
+There are two major approaches to CDS:
+
+- **Rule-based CDS:** Hard-coded, explicit logic that implements clinical guidelines as "if-then" statements (e.g., "If the patient has diabetes and no recent A1c lab, remind the provider to order one"). These are easy to audit and understand, but can be brittle and require maintenance as evidence evolves.
+- **Model-driven (AI-based) CDS:** Uses statistical or machine learning models trained on data to make predictions or recommendations (e.g. risk scores for sepsis, readmission). These can capture complex relationships but are less transparent and harder to trace.
+
+In practice, most real CDS systems use a combination of both approaches: models for prediction, and rules for enforceability, safety, and auditability. Rule-based CDS is still dominant in many settings due to its simplicity and transparency for both developers and clinicians.
+
+## 11.2 Build the per-patient feature view
+
+In preparation for clinical decision support, we need a consolidated "feature view" for each patient.
+This per-patient feature view should summarize key data elements relevant to CDS rules:
+- Demographics (e.g., age, sex)
+- Most recent results for important labs or observations
+- A set of all active conditions
+- A set of all current medications
+This structure makes it easy to apply rules and generate alerts on a patient-by-patient basis.
+
+```{r}
+#| message: false
+library(dplyr)
+library(tidyr)
+
+# Pull out patient and observation tables
+patients <- ehr$patients
+obs <- ehr$observations
+
+# Helper function to get each patient's most recent value for a specific observation
+latest <- function(observation_name) {
+  obs %>%
+    filter(observation == observation_name) %>%
+    arrange(date) %>%
+    group_by(patient_id) %>%
+    summarise(value = last(value), .groups = "drop")
+}
+
+latest_sbp <- latest("Systolic blood pressure") %>% rename(latest_sbp = value)
+latest_a1c <- latest("Hemoglobin A1c") %>% rename(latest_a1c = value)
+
+# Set of conditions per patient (empty set if none)
+cond_sets <- ehr$conditions %>%
+  group_by(patient_id) %>%
+  summarise(conditions = list(unique(condition)), .groups = "drop")
+
+# Set of current medications per patient (empty set if none)
+med_sets <- ehr$medications %>%
+  group_by(patient_id) %>%
+  summarise(medications = list(unique(medication)), .groups = "drop")
+
+# Start building the per-patient feature table using age and sex, joined to the rest
+feat <- patients %>%
+  select(patient_id, age, sex) %>%
+  left_join(latest_sbp, by = "patient_id") %>%
+  left_join(latest_a1c, by = "patient_id") %>%
+  left_join(cond_sets, by = "patient_id") %>%
+  left_join(med_sets, by = "patient_id") %>%
+  mutate(
+    conditions = lapply(conditions, function(x) if (is.null(x)) character(0) else x),
+    medications = lapply(medications, function(x) if (is.null(x)) character(0) else x)
+  )
+
+cat("Per-patient CDS feature view (first 5):\n")
+print(feat %>% select(patient_id, age, sex, latest_sbp, latest_a1c) %>% head(5), n = 5)
+```
+
+## 11.3 A rule engine
+
+Each clinical decision support rule is defined as an R function that takes
+a single patient's feature row (from the `feat` table) as input and returns
+either a `list` describing an alert (if the rule is triggered for that patient)
+or `NULL` (if not triggered). This alert list typically includes fields such as
+`rule` (a short identifier for the rule), `severity`, and a human-readable message.
+
+By representing all rules in this consistent, functional style, we keep the rules isolated
+from the rule engine logic itself. This makes the rule system modular and extensible:
+to add a new rule, you simply implement a new function following this pattern and include it
+in the `RULES` list. The rule runner code does not need to change, regardless of how many rules
+exist or what they evaluate.
+
+```{r}
+# --- Clinical Decision Support Rules and Rule Engine ---
+
+# Rule 1: Uncontrolled Hypertension
+# Triggers if a patient has recorded "Essential hypertension" and their latest systolic blood pressure (SBP) is 140 mmHg or higher.
+rule_uncontrolled_htn <- function(f) {
+  if ("Essential hypertension" %in% f$conditions[[1]] &&
+      !is.na(f$latest_sbp) && f$latest_sbp >= 140) {
+    return(list(
+      rule = "uncontrolled_htn",
+      severity = "warning",
+      msg = sprintf("BP %.0f mmHg with hypertension — consider intensifying therapy.", f$latest_sbp)
+    ))
+  }
+  NULL
+}
+
+# Rule 2: Diabetes but No Recent HbA1c
+# Triggers if a patient has "Type 2 diabetes mellitus" but no hemoglobin A1c value on record.
+rule_diabetes_no_a1c <- function(f) {
+  if ("Type 2 diabetes mellitus" %in% f$conditions[[1]] && is.na(f$latest_a1c)) {
+    return(list(
+      rule = "diabetes_no_a1c",
+      severity = "info",
+      msg = "Diabetic patient with no A1c on record — order HbA1c."
+    ))
+  }
+  NULL
+}
+
+# Rule 3: NSAID Prescribed to CKD Patient
+# Triggers if a patient with chronic kidney disease has been prescribed ibuprofen (an NSAID), which is contraindicated.
+rule_nsaid_ckd <- function(f) {
+  if ("Ibuprofen" %in% f$medications[[1]] && "Chronic kidney disease" %in% f$conditions[[1]]) {
+    return(list(
+      rule = "nsaid_ckd",
+      severity = "critical",
+      msg = "NSAID (ibuprofen) prescribed with CKD — contraindicated; review."
+    ))
+  }
+  NULL
+}
+
+# Rule 4: Statin Not Prescribed for At-Risk Diabetic
+# Triggers if a diabetic patient age 40 or older is not receiving a statin (here, Atorvastatin).
+rule_statin_gap <- function(f) {
+  if ("Type 2 diabetes mellitus" %in% f$conditions[[1]] &&
+      f$age >= 40 &&
+      !("Atorvastatin" %in% f$medications[[1]])) {
+    return(list(
+      rule = "statin_gap",
+      severity = "info",
+      msg = "Diabetic >=40 not on a statin — consider statin therapy."
+    ))
+  }
+  NULL
+}
+
+# List of all rule functions to evaluate for each patient.
+RULES <- list(
+  rule_uncontrolled_htn,
+  rule_diabetes_no_a1c,
+  rule_nsaid_ckd,
+  rule_statin_gap
+)
+
+# Rule engine: Run all rules for each patient feature row.
+# Returns a data frame of alerts, each corresponding to a rule that fired for a patient.
+run_rules <- function(feat) {
+  alert_rows <- list()
+  for (i in seq_len(nrow(feat))) {       # Iterate over all patients by row
+    f <- feat[i, ]
+    pid <- f$patient_id
+    for (rule in RULES) {                # For each rule...
+      hit <- rule(f)                     # ...evaluate rule for this patient's features
+      if (!is.null(hit)) {               # If rule fires (returns a list)...
+        alert_rows[[length(alert_rows) + 1]] <- tibble(
+          patient_id = pid, rule = hit$rule, severity = hit$severity, msg = hit$msg
+        )
+      }
+    }
+  }
+  bind_rows(alert_rows)                  # Combine all alerts into a data frame
+}
+
+# Run all rules across the feature table and display summary statistics about alerts.
+alerts <- run_rules(feat)
+cat(sprintf("Total alerts fired: %d across %d patients\n", nrow(alerts), n_distinct(alerts$patient_id)))
+print(alerts %>% count(rule, sort = TRUE))
+```
+
+### Milestone 1 - alerts for one patient
+
+Here we will display the alerts generated by the rule engine for a single patient.
+We will select the first patient ID from the alerts table and print out each alert
+for that patient, including its severity and message, to illustrate the personalized
+decision support being delivered.
+
+```{r}
+# Select the first patient in the alerts table to use as an example
+example_pid <- alerts$patient_id[1]
+cat(sprintf("Alerts for %s:\n", example_pid))
+# Iterate over all alerts for this patient and print each alert's severity and message
+for (i in which(alerts$patient_id == example_pid)) {
+  cat(sprintf("  [%-8s] %s\n", toupper(alerts$severity[i]), alerts$msg[i]))
+}
+```
+
+## 11.4 A risk score
+
+In addition to providing alerts as simple yes/no (boolean) rules, Clinical Decision Support (CDS) systems also frequently offer a **risk score** for a given clinical problem.
+A risk score quantifies a patient's likelihood of a future adverse outcome (here, for cardiovascular disease) in a point-based, interpretable way.
+The following example implements a straightforward cardiovascular risk point system for educational purposes.
+This system assigns points to a patient based on their age group, elevated systolic blood pressure, and/or specific chronic conditions (such as diabetes, hypertension, or chronic kidney disease).
+The higher the total points, the greater the cardiovascular risk. This simple score is not a validated medical tool, but illustrates the logic that real world CDS uses to stratify risk and personalize care recommendations.
+
+```{r}
+# The following function and code implement a simple, interpretable cardiovascular risk scoring system:
+
+#' Compute a cardiovascular risk score for a patient.
+#'
+#' @param f A single-row feature tibble (patient features/row).
+#' @return integer. Total risk points for this patient.
+cv_risk_points <- function(f) {
+  pts <- 0
+  # Age points: 2 points if 65 or older, 1 point if between 50 and 64, otherwise 0.
+  pts <- pts + ifelse(f$age >= 65, 2, 0) + ifelse(f$age >= 50 & f$age < 65, 1, 0)
+  # Systolic blood pressure: 2 points if latest_sbp is 140 or higher.
+  if (!is.na(f$latest_sbp) && f$latest_sbp >= 140) {
+    pts <- pts + 2
+  }
+  # Chronic conditions:
+  # 2 points if patient has Type 2 diabetes mellitus.
+  pts <- pts + as.integer("Type 2 diabetes mellitus" %in% f$conditions[[1]]) * 2
+  # 1 point if patient has essential hypertension.
+  pts <- pts + as.integer("Essential hypertension" %in% f$conditions[[1]]) * 1
+  # 2 points if patient has chronic kidney disease.
+  pts <- pts + as.integer("Chronic kidney disease" %in% f$conditions[[1]]) * 2
+  # Return the total risk points
+  pts
+}
+
+# Apply the risk point calculation for every patient in the feat table.
+feat$cv_points <- vapply(seq_len(nrow(feat)), function(i) cv_risk_points(feat[i, ]), numeric(1))
+
+# Stratify patients into risk bands based on their total points:
+# -1 to 1 = "low", 2 to 3 = "moderate", 4+ = "high".
+feat$cv_band <- cut(
+  feat$cv_points,
+  breaks = c(-1, 1, 3, 99),
+  labels = c("low", "moderate", "high")
+)
+
+cat("Risk stratification:\n")
+print(feat %>% count(cv_band, sort = TRUE))  # Show how many patients fall into each risk band
+
+cat("\nHighest-risk patients:\n")
+# Show top 5 patients with the highest risk scores, including age, latest SBP, total points, and risk band.
+print(
+  feat %>%
+    arrange(desc(cv_points)) %>%
+    select(patient_id, age, latest_sbp, cv_points, cv_band) %>%
+    head(5),
+  n = 5
+)
+```
+
+## 11.5 Delivering alerts as CDS Hooks cards
+
+**CDS Hooks** is a widely adopted standard for delivering clinical decision support within an Electronic Health Record (EHR) system.
+When a specific workflow event occurs in the EHR—such as a clinician opening a patient's chart (`patient-view`)—the EHR triggers
+a request to an external CDS (Clinical Decision Support) service. The CDS service evaluates the latest patient data and context,
+and responds with a set of **cards** containing decision support information to be displayed to the clinician.
+
+Each card is a structured message that typically includes:
+- `summary`: a concise headline summarizing the alert or advice (max 140 characters, shown prominently)
+- `indicator`: the severity level of the card—either `"info"`, `"warning"`, or `"critical"`—which influences the EHR's visual display
+- `detail`: a longer explanation providing more context and justification for the recommendation
+- `source`: attribution information for the rule or CDS application generating the card (e.g., "Source: Medication Safety CDS v1.0")
+- `suggestions` (optional): actionable buttons or choices that the clinician may execute directly from the card, such as ordering a lab test,
+  adjusting a medication, or simply documenting acknowledgment.
+
+CDS Hooks ensures this exchange is standardized, so that EHRs and external CDS services can interoperate reliably across settings and vendors.
+
+```{r}
+#| message: false
+library(jsonlite)
+
+# This named list maps human-readable severity labels to the CDS Hooks "indicator" levels
+INDICATOR <- c(info = "info", warning = "warning", critical = "critical")
+
+#' Converts a single alert (row of the alerts table) into a CDS Hooks card list.
+#' - summary: Up to 140 characters summarizing the message.
+#' - indicator: Severity ("info", "warning", "critical") for visual emphasis.
+#' - detail: Full message to show more context.
+#' - source: Label indicating which rule generated the card.
+#' - suggestions: Button for the clinician to acknowledge/document the alert.
+to_cds_card <- function(alert) {
+  list(
+    summary = substr(alert$msg, 1, 140),                 # Truncate to 140 chars for the headline
+    indicator = unname(INDICATOR[alert$severity]),        # Standardized severity value
+    detail = alert$msg,                                    # Longer explanation, full message
+    source = list(label = sprintf("HealthInformatics CDS (rule: %s)", alert$rule)),  # Source for audit/attribution
+    suggestions = list(list(label = "Acknowledge and document"))  # Optional action button
+  )
+}
+
+#' For a given patient id (pid), return a CDS Hooks-compliant response.
+#' This looks up all alerts for the patient and packages them as cards.
+#' list(cards = list(...cards for that patient...))
+cds_response_for <- function(pid) {
+  # Select only alerts for the specified patient
+  pid_alerts <- alerts %>% filter(patient_id == pid)
+  # Convert each alert row into a CDS card list
+  cards <- lapply(seq_len(nrow(pid_alerts)), function(i) to_cds_card(pid_alerts[i, ]))
+  list(cards = cards)
+}
+
+# Create a sample CDS Hooks response for a sample patient and print as pretty-printed JSON
+sample_response <- cds_response_for(example_pid)
+cat(toJSON(sample_response, auto_unbox = TRUE, pretty = TRUE))
+```
+
+### Milestone 2 - this is what the EHR renders at the point of care
+The following represents exactly what the clinician sees in the EHR interface at the moment of care—how clinical alerts, recommendations, and supporting information are displayed to guide decision-making in real time.
+
+```{r}
+# For each card (alert) in the sample CDS Hooks response, display a summary
+icons <- c(info = "\u2139\ufe0f", warning = "\u26a0\ufe0f", critical = "\u26d4")
+for (card in sample_response$cards) {
+  # Assign an icon based on the card's indicator severity
+  icon <- icons[[card$indicator]]
+  # Print the icon, severity, and summary of the alert
+  cat(sprintf("%s [%s] %s\n", icon, toupper(card$indicator), card$summary))
+  # Print the source rule that generated the alert for reference
+  cat(sprintf("    source: %s\n\n", card$source$label))
+}
+```
+
+## 11.6 Alert fatigue - the central usability risk
+
+The most common failure of Clinical Decision Support (CDS) systems is known as **alert fatigue**.
+This occurs when clinicians are repeatedly exposed to a high volume of low-importance alerts—such as minor warnings or informational messages—which leads them to become desensitized.
+As a result, they may begin to ignore not just the low-value alerts, but also truly critical warnings that require immediate attention, potentially compromising patient safety.
+In practice, this is reflected by override rates (alerts ignored or dismissed by clinicians) sometimes exceeding 90% in CDS systems that are not carefully optimized.
+Effective CDS design uses two main strategies to address alert fatigue:
+  1. **Prioritizing by severity**: Ensuring that only the most clinically important and relevant alerts are highlighted prominently, while less urgent alerts are shown with lower priority.
+  2. **Suppressing low-value alerts**: Filtering out alerts that are unlikely to inform or change clinical decision-making, so as to minimize unnecessary interruptions for clinicians.
+
+```{r}
+#| message: false
+library(ggplot2)
+
+# Calculate number of alerts per patient in original alerts table
+burden <- alerts %>% count(patient_id, name = "n")
+cat(sprintf("Alert burden — mean %.2f, max %d alerts/patient\n", mean(burden$n), max(burden$n)))
+
+# Define a suppression/prioritization policy:
+# For each patient, if there is at least one critical alert,
+# suppress (i.e., remove) their informational ("info") alerts to prevent overload.
+prioritize <- function(alerts) {
+  keep <- list()  # This will collect the alerts to keep
+  for (pid in unique(alerts$patient_id)) {
+    grp <- alerts %>% filter(patient_id == pid)
+    # Check if the group for this patient has any critical alerts
+    has_critical <- any(grp$severity == "critical")
+    for (i in seq_len(nrow(grp))) {
+      a <- grp[i, ]
+      # If any alert for this patient is critical, skip their "info" alerts
+      if (has_critical && a$severity == "info") {
+        next  # Skip "info" alerts due to higher-severity present
+      }
+      keep[[length(keep) + 1]] <- a  # Otherwise, keep the alert
+    }
+  }
+  # Return all retained alerts as a new data frame
+  bind_rows(keep)
+}
+
+# Apply prioritization strategy to alerts
+filtered <- prioritize(alerts)
+cat(sprintf("Alerts before: %d  ->  after prioritization: %d (%.0f%% reduction)\n",
+            nrow(alerts), nrow(filtered), 100 * (1 - nrow(filtered) / nrow(alerts))))
+
+# Plot the total count of each severity level before and after prioritization
+order_levels <- c("info", "warning", "critical")
+before <- alerts %>% count(severity) %>%
+  right_join(tibble(severity = order_levels), by = "severity") %>%
+  mutate(n = ifelse(is.na(n), 0, n), stage = "before")
+after <- filtered %>% count(severity) %>%
+  right_join(tibble(severity = order_levels), by = "severity") %>%
+  mutate(n = ifelse(is.na(n), 0, n), stage = "after")
+plot_df <- bind_rows(before, after) %>%
+  mutate(severity = factor(severity, levels = order_levels),
+         stage = factor(stage, levels = c("before", "after")))
+
+ggplot(plot_df, aes(x = severity, y = n, fill = stage)) +
+  geom_col(position = position_dodge(width = 0.7), width = 0.6) +
+  scale_fill_manual(values = c(before = "#4C72B0", after = "#55A868")) +
+  labs(x = NULL, y = "alerts", fill = NULL, title = "Alert volume before vs after prioritization") +
+  theme_minimal()
+```
+
+## Exercises
+
+1. Add a **drug–drug interaction** rule (e.g. two antihypertensives) and confirm it
+   flows through to CDS Hooks cards.
+2. Make severity **actionable**: attach a `suggestions` action to the `nsaid_ckd`
+   card that proposes discontinuing the NSAID.
+3. Replace the risk points with a **logistic risk model** trained on the features
+   (bridge to the model-driven CDS of the Clinical AI series) and compare which
+   patients each approach flags.
+
+## Key takeaways
+
+- CDS is governed by the **Five Rights**; **rule-based** and **model-driven**
+  support complement each other.
+- A clean design makes each **rule a function**, so the engine scales without churn.
+- **CDS Hooks cards** (summary/indicator/detail/source/suggestions) are the standard
+  delivery format inside FHIR-based EHRs.
+- **Alert fatigue** is the defining usability failure; **prioritization and
+  suppression** are essential, not optional.
+
+---
+*End of Part III — Privacy, Text & Applied Informatics. Next: Part IV — Advanced Topics.*

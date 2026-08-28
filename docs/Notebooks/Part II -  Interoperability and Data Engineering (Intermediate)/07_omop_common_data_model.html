@@ -1,0 +1,1377 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.8.27">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+
+<title>Module 7: Common Data Models (OMOP CDM) – Health Informatics in R</title>
+<style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+/* CSS for syntax highlighting */
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+  }
+pre.numberSource { margin-left: 3em;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+</style>
+
+
+<script src="../../site_libs/quarto-nav/quarto-nav.js"></script>
+<script src="../../site_libs/clipboard/clipboard.min.js"></script>
+<script src="../../site_libs/quarto-search/autocomplete.umd.js"></script>
+<script src="../../site_libs/quarto-search/fuse.min.js"></script>
+<script src="../../site_libs/quarto-search/quarto-search.js"></script>
+<meta name="quarto:offset" content="../../">
+<link href="../../Notebooks/Part II -  Interoperability and Data Engineering (Intermediate)/08_data_quality_and_validation.html" rel="next">
+<link href="../../Notebooks/Part II -  Interoperability and Data Engineering (Intermediate)/06_data_ingestion_etl.html" rel="prev">
+<link href="../../Image/health_informatics_r_logo.png" rel="icon" type="image/png">
+<script src="../../site_libs/quarto-html/quarto.js" type="module"></script>
+<script src="../../site_libs/quarto-html/tabsets/tabsets.js" type="module"></script>
+<script src="../../site_libs/quarto-html/axe/axe-check.js" type="module"></script>
+<script src="../../site_libs/quarto-html/popper.min.js"></script>
+<script src="../../site_libs/quarto-html/tippy.umd.min.js"></script>
+<script src="../../site_libs/quarto-html/anchor.min.js"></script>
+<link href="../../site_libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="../../site_libs/quarto-html/quarto-syntax-highlighting-ed96de9b727972fe78a7b5d16c58bf87.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="../../site_libs/bootstrap/bootstrap.min.js"></script>
+<link href="../../site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="../../site_libs/bootstrap/bootstrap-c5c3ec5290bf6b57b4a42a3553f76d36.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+<script id="quarto-search-options" type="application/json">{
+  "location": "navbar",
+  "copy-button": false,
+  "collapse-after": 3,
+  "panel-placement": "end",
+  "type": "overlay",
+  "limit": 50,
+  "keyboard-shortcut": [
+    "f",
+    "/",
+    "s"
+  ],
+  "language": {
+    "search-no-results-text": "No results",
+    "search-matching-documents-text": "matching documents",
+    "search-copy-link-title": "Copy link to search",
+    "search-hide-matches-text": "Hide additional matches",
+    "search-more-match-text": "more match in this document",
+    "search-more-matches-text": "more matches in this document",
+    "search-clear-button-title": "Clear",
+    "search-text-placeholder": "",
+    "search-detached-cancel-button-title": "Cancel",
+    "search-submit-button-title": "Submit",
+    "search-label": "Search"
+  }
+}</script>
+<style>html{ scroll-behavior: smooth; }</style>
+
+
+</head>
+
+<body class="nav-sidebar docked nav-fixed quarto-light">
+
+<div id="quarto-search-results"></div>
+  <header id="quarto-header" class="headroom fixed-top quarto-banner">
+    <nav class="navbar navbar-expand-lg " data-bs-theme="dark">
+      <div class="navbar-container container-fluid">
+      <div class="navbar-brand-container mx-auto">
+    <a class="navbar-brand" href="../../index.html">
+    <span class="navbar-title">Health Informatics in R</span>
+    </a>
+  </div>
+            <div id="quarto-search" class="" title="Search"></div>
+          <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarCollapse" aria-controls="navbarCollapse" role="menu" aria-expanded="false" aria-label="Toggle navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
+  <span class="navbar-toggler-icon"></span>
+</button>
+          <div class="collapse navbar-collapse" id="navbarCollapse">
+            <ul class="navbar-nav navbar-nav-scroll me-auto">
+  <li class="nav-item">
+    <a class="nav-link active" href="../../index.html" aria-current="page"> 
+<span class="menu-text">Home</span></a>
+  </li>  
+</ul>
+            <ul class="navbar-nav navbar-nav-scroll ms-auto">
+  <li class="nav-item compact">
+    <a class="nav-link" href="https://github.com/zia207/Health-informatics"> <i class="bi bi-github" role="img">
+</i> 
+<span class="menu-text"></span></a>
+  </li>  
+  <li class="nav-item compact">
+    <a class="nav-link" href="https://www.linkedin.com/in/zia-ahmed207"> <i class="bi bi-linkedin" role="img">
+</i> 
+<span class="menu-text"></span></a>
+  </li>  
+  <li class="nav-item">
+    <a class="nav-link" href="mailto:zia207@gmail.com"> 
+<span class="menu-text">zia207@gmail.com</span></a>
+  </li>  
+</ul>
+          </div> <!-- /navcollapse -->
+            <div class="quarto-navbar-tools">
+</div>
+      </div> <!-- /container-fluid -->
+    </nav>
+  <nav class="quarto-secondary-nav">
+    <div class="container-fluid d-flex">
+      <button type="button" class="quarto-btn-toggle btn" data-bs-toggle="collapse" role="button" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
+        <i class="bi bi-layout-text-sidebar-reverse"></i>
+      </button>
+        <nav class="quarto-page-breadcrumbs" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="../../Notebooks/Part II -  Interoperability and Data Engineering (Intermediate)/05_fhir_in_depth.html">**Part II — Interoperability &amp; Data Engineering**</a></li><li class="breadcrumb-item"><a href="../../Notebooks/Part II -  Interoperability and Data Engineering (Intermediate)/07_omop_common_data_model.html">07 · OMOP Common Data Model</a></li></ol></nav>
+        <a class="flex-grow-1" role="navigation" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">      
+        </a>
+      <button type="button" class="btn quarto-search-button" aria-label="Search" onclick="window.quartoOpenSearch();">
+        <i class="bi bi-search"></i>
+      </button>
+    </div>
+  </nav>
+</header>
+<!-- content -->
+<header id="title-block-header" class="quarto-title-block default page-columns page-full">
+  <div class="quarto-title-banner page-columns page-full">
+    <div class="quarto-title column-body"><nav class="quarto-page-breadcrumbs quarto-title-breadcrumbs d-none d-lg-block" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="../../Notebooks/Part II -  Interoperability and Data Engineering (Intermediate)/05_fhir_in_depth.html">**Part II — Interoperability &amp; Data Engineering**</a></li><li class="breadcrumb-item"><a href="../../Notebooks/Part II -  Interoperability and Data Engineering (Intermediate)/07_omop_common_data_model.html">07 · OMOP Common Data Model</a></li></ol></nav>
+      <h1 class="title">Module 7: Common Data Models (OMOP CDM)</h1>
+                      </div>
+  </div>
+    
+  
+  <div class="quarto-title-meta">
+
+      
+    
+      
+    </div>
+    
+  
+  </header><div id="quarto-content" class="quarto-container page-columns page-rows-contents page-layout-article page-navbar">
+<!-- sidebar -->
+  <nav id="quarto-sidebar" class="sidebar collapse collapse-horizontal quarto-sidebar-collapse-item sidebar-navigation docked overflow-auto">
+    <div class="pt-lg-2 mt-2 text-left sidebar-header">
+      <a href="../../index.html" class="sidebar-logo-link">
+      <img src="../../Image/health_informatics_r_logo.png" alt="" class="sidebar-logo light-content py-0 d-lg-inline d-none">
+      <img src="../../Image/health_informatics_r_logo.png" alt="" class="sidebar-logo dark-content py-0 d-lg-inline d-none">
+      </a>
+      </div>
+        <div class="mt-2 flex-shrink-0 align-items-center">
+        <div class="sidebar-search">
+        <div id="quarto-search" class="" title="Search"></div>
+        </div>
+        </div>
+    <div class="sidebar-menu-container"> 
+    <ul class="list-unstyled mt-1">
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start collapsed" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="false">
+ <span class="menu-text"><strong>Health Informatics in R</strong></span></a>
+          <a class="sidebar-item-toggle text-start collapsed" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="false" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-1" class="collapse list-unstyled sidebar-section depth1 ">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../index.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Health Informatics in R</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start collapsed" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-2" role="navigation" aria-expanded="false">
+ <span class="menu-text"><strong>Part I — Foundations</strong> (Beginner)</span></a>
+          <a class="sidebar-item-toggle text-start collapsed" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-2" role="navigation" aria-expanded="false" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-2" class="collapse list-unstyled sidebar-section depth1 ">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../Notebooks/Part I - Foundations (Beginner)/01_what_is_health_informatics.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">01 · What Health Informatics Is</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../Notebooks/Part I - Foundations (Beginner)/02_health_data_types_and_structure.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">02 · Health Data Types and Structure</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../Notebooks/Part I - Foundations (Beginner)/03_clinical_terminologies.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">03 · Clinical Terminologies</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../Notebooks/Part I - Foundations (Beginner)/04_health_data_standards_and_formats.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">04 · Standards and Formats</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-3" role="navigation" aria-expanded="true">
+ <span class="menu-text"><strong>Part II — Interoperability &amp; Data Engineering</strong></span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-3" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-3" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../Notebooks/Part II -  Interoperability and Data Engineering (Intermediate)/05_fhir_in_depth.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">05 · FHIR in Depth</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../Notebooks/Part II -  Interoperability and Data Engineering (Intermediate)/06_data_ingestion_etl.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">06 · Data Ingestion and ETL</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../Notebooks/Part II -  Interoperability and Data Engineering (Intermediate)/07_omop_common_data_model.html" class="sidebar-item-text sidebar-link active">
+ <span class="menu-text">07 · OMOP Common Data Model</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../Notebooks/Part II -  Interoperability and Data Engineering (Intermediate)/08_data_quality_and_validation.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">08 · Data Quality and Validation</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start collapsed" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-4" role="navigation" aria-expanded="false">
+ <span class="menu-text"><strong>Part III — Privacy, Text &amp; Applied Informatics</strong></span></a>
+          <a class="sidebar-item-toggle text-start collapsed" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-4" role="navigation" aria-expanded="false" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-4" class="collapse list-unstyled sidebar-section depth1 ">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../Notebooks/Part III - Privacy, Text, and Applied Informatics (Intermediate–Advanced)/09_privacy_deidentification.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">09 · Privacy and De-identification</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../Notebooks/Part III - Privacy, Text, and Applied Informatics (Intermediate–Advanced)/10_clinical_nlp.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">10 · Clinical NLP</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../Notebooks/Part III - Privacy, Text, and Applied Informatics (Intermediate–Advanced)/11_clinical_decision_support.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">11 · Clinical Decision Support</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start collapsed" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-5" role="navigation" aria-expanded="false">
+ <span class="menu-text"><strong>Part IV — Advanced Topics</strong></span></a>
+          <a class="sidebar-item-toggle text-start collapsed" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-5" role="navigation" aria-expanded="false" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-5" class="collapse list-unstyled sidebar-section depth1 ">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../Notebooks/Part IV -  Advanced Topics/12_population_public_health.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">12 · Public Health Informatics</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../Notebooks/Part IV -  Advanced Topics/13_claim_data_analysis.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">13 · Claims Data Analysis</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../Notebooks/Part IV -  Advanced Topics/14_clinical_data_warehousing.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">14 · Clinical Data Warehousing</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../Notebooks/Part IV -  Advanced Topics/15_interoperability_at_scale_bulk_data.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">15 · Interoperability at Scale</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../Notebooks/Part IV -  Advanced Topics/16_emerging_directions.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">16 · Emerging Directions</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+    </ul>
+    </div>
+</nav>
+<div id="quarto-sidebar-glass" class="quarto-sidebar-collapse-item" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item"></div>
+<!-- margin-sidebar -->
+    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
+        <nav id="TOC" role="doc-toc" class="toc-active">
+    <h2 id="toc-title">On this page</h2>
+   
+  <ul>
+  <li><a href="#learning-objectives" id="toc-learning-objectives" class="nav-link active" data-scroll-target="#learning-objectives">Learning objectives</a></li>
+  <li><a href="#dataset" id="toc-dataset" class="nav-link" data-scroll-target="#dataset">Dataset</a></li>
+  <li><a href="#why-a-common-data-model" id="toc-why-a-common-data-model" class="nav-link" data-scroll-target="#why-a-common-data-model">7.1 Why a common data model</a></li>
+  <li><a href="#the-omop-vocabulary-concept" id="toc-the-omop-vocabulary-concept" class="nav-link" data-scroll-target="#the-omop-vocabulary-concept">7.2 The OMOP vocabulary (<code>concept</code>)</a></li>
+  <li><a href="#building-the-omop-tables" id="toc-building-the-omop-tables" class="nav-link" data-scroll-target="#building-the-omop-tables">7.3 Building the OMOP tables</a>
+  <ul class="collapse">
+  <li><a href="#milestone-1---person" id="toc-milestone-1---person" class="nav-link" data-scroll-target="#milestone-1---person">Milestone 1 - PERSON</a></li>
+  <li><a href="#milestone-2---visit_occurrence-condition_occurrence-and-measurement" id="toc-milestone-2---visit_occurrence-condition_occurrence-and-measurement" class="nav-link" data-scroll-target="#milestone-2---visit_occurrence-condition_occurrence-and-measurement">Milestone 2 - VISIT_OCCURRENCE, CONDITION_OCCURRENCE, and MEASUREMENT</a></li>
+  </ul></li>
+  <li><a href="#a-standardized-analytic-query" id="toc-a-standardized-analytic-query" class="nav-link" data-scroll-target="#a-standardized-analytic-query">7.4 A standardized analytic query</a></li>
+  <li><a href="#other-common-data-models" id="toc-other-common-data-models" class="nav-link" data-scroll-target="#other-common-data-models">7.5 Other common data models</a>
+  <ul class="collapse">
+  <li><a href="#omop-observational-medical-outcomes-partnership" id="toc-omop-observational-medical-outcomes-partnership" class="nav-link" data-scroll-target="#omop-observational-medical-outcomes-partnership">1. OMOP (Observational Medical Outcomes Partnership)</a></li>
+  <li><a href="#i2b2-informatics-for-integrating-biology-and-the-bedside" id="toc-i2b2-informatics-for-integrating-biology-and-the-bedside" class="nav-link" data-scroll-target="#i2b2-informatics-for-integrating-biology-and-the-bedside">2. i2b2 (Informatics for Integrating Biology and the Bedside)</a></li>
+  <li><a href="#pcornet-patient-centered-outcomes-research-network" id="toc-pcornet-patient-centered-outcomes-research-network" class="nav-link" data-scroll-target="#pcornet-patient-centered-outcomes-research-network">3. PCORnet (Patient-Centered Outcomes Research Network)</a></li>
+  <li><a href="#sentinel" id="toc-sentinel" class="nav-link" data-scroll-target="#sentinel">4. Sentinel</a></li>
+  </ul></li>
+  <li><a href="#exercises" id="toc-exercises" class="nav-link" data-scroll-target="#exercises">Exercises</a></li>
+  <li><a href="#key-takeaways" id="toc-key-takeaways" class="nav-link" data-scroll-target="#key-takeaways">Key takeaways</a></li>
+  </ul>
+<div class="toc-actions"><ul><li><a href="https://github.com/zia207/Health-informatics/edit/main/Notebooks/Part II -  Interoperability and Data Engineering (Intermediate)/07_omop_common_data_model.qmd" class="toc-action"><i class="bi bi-github"></i>Edit this page</a></li><li><a href="https://github.com/zia207/Health-informatics/issues/new" class="toc-action"><i class="bi empty"></i>Report an issue</a></li></ul></div></nav>
+    </div>
+<!-- main -->
+<main class="content quarto-banner-title-block" id="quarto-document-content">
+
+
+
+
+
+<div class="quarto-figure quarto-figure-center">
+<figure class="figure">
+<p><img src="../../Image/chapter-banner.png" class="img-fluid figure-img"></p>
+<figcaption>Health-Informatics: An R Tutorial</figcaption>
+</figure>
+</div>
+<p><strong>Health Informatics in R</strong> · Part II: Interoperability &amp; Data Engineering · Module 7 of 16</p>
+<hr>
+<p>Every health system stores data differently. A <strong>Common Data Model (CDM)</strong> solves this by defining one standardized schema and vocabulary, so the <em>same analysis code</em> runs unchanged across many institutions. The <strong>OMOP CDM</strong> (from the OHDSI community) is the most widely used for observational research. This module maps our synthetic EHR into OMOP.</p>
+<section id="learning-objectives" class="level2">
+<h2 class="anchored" data-anchor-id="learning-objectives">Learning objectives</h2>
+<p>By the end of this module you will be able to:</p>
+<ol type="1">
+<li>Explain <strong>why</strong> a common data model matters for multi-site research.</li>
+<li>Describe the core <strong>OMOP tables</strong>: <code>person</code>, <code>visit_occurrence</code>, <code>condition_occurrence</code>, <code>drug_exposure</code>, <code>measurement</code>, and the <code>concept</code> vocabulary.</li>
+<li><strong>Map source data to OMOP</strong> using vocabulary tables and standard concept IDs.</li>
+<li>Run a <strong>standardized analytic query</strong> against the CDM.</li>
+<li>Name alternative CDMs (<strong>i2b2, PCORnet, Sentinel</strong>) and when they’re used.</li>
+</ol>
+</section>
+<section id="dataset" class="level2">
+<h2 class="anchored" data-anchor-id="dataset">Dataset</h2>
+<p>We reuse the synthetic EHR and transform it into a <strong>miniature OMOP CDM</strong>. The <code>concept</code> IDs shown are <strong>illustrative</strong> standard concepts (the real OMOP vocabulary lives in OHDSI Athena); a couple — gender and common conditions — match real standard concept IDs, but treat the table as a teaching stand-in, not the source of truth.</p>
+<div class="cell">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb1"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="co"># --- Self-contained synthetic EHR generator (identical to Part I) ---</span></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="co"># This is the SAME generator from Module 1. We rebuild the fake hospital database</span></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="co"># here so this notebook can run on its own. Nothing here is a real patient.</span></span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(dplyr)</span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(tibble)</span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a><span class="co"># This function generates a synthetic electronic health record (EHR) dataset.</span></span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a><span class="co"># It creates mock tables for patients, encounters, observations, conditions, and medications,</span></span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a><span class="co"># all with plausible structure, but not referencing any real patients or requiring external data.</span></span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a>make_synthetic_ehr <span class="ot">&lt;-</span> <span class="cf">function</span>(<span class="at">n_patients =</span> <span class="dv">200</span>, <span class="at">seed =</span> <span class="dv">42</span>) {</span>
+<span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a>  <span class="co"># Generate a small, internally-consistent synthetic EHR dataset.</span></span>
+<span id="cb1-12"><a href="#cb1-12" aria-hidden="true" tabindex="-1"></a>  <span class="co"># Returns a list of linked tibbles: patients, encounters, observations,</span></span>
+<span id="cb1-13"><a href="#cb1-13" aria-hidden="true" tabindex="-1"></a>  <span class="co"># conditions, and medications. This is for illustrative, educational use.</span></span>
+<span id="cb1-14"><a href="#cb1-14" aria-hidden="true" tabindex="-1"></a>  <span class="fu">set.seed</span>(seed)  <span class="co"># same seed =&gt; same fake people every run</span></span>
+<span id="cb1-15"><a href="#cb1-15" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-16"><a href="#cb1-16" aria-hidden="true" tabindex="-1"></a>  <span class="co"># --- patients table ---</span></span>
+<span id="cb1-17"><a href="#cb1-17" aria-hidden="true" tabindex="-1"></a>  <span class="co"># Create a tibble with n_patients patients, each with a name, sex, age, and birth year.</span></span>
+<span id="cb1-18"><a href="#cb1-18" aria-hidden="true" tabindex="-1"></a>  first <span class="ot">&lt;-</span> <span class="fu">c</span>(<span class="st">"Ava"</span>,<span class="st">"Liam"</span>,<span class="st">"Noah"</span>,<span class="st">"Mia"</span>,<span class="st">"Zoe"</span>,<span class="st">"Omar"</span>,<span class="st">"Ivan"</span>,<span class="st">"Sara"</span>,<span class="st">"Leo"</span>,<span class="st">"Nina"</span>,</span>
+<span id="cb1-19"><a href="#cb1-19" aria-hidden="true" tabindex="-1"></a>             <span class="st">"Ruth"</span>,<span class="st">"Kai"</span>,<span class="st">"Yara"</span>,<span class="st">"Theo"</span>,<span class="st">"Ida"</span>,<span class="st">"Sam"</span>,<span class="st">"Ana"</span>,<span class="st">"Eli"</span>,<span class="st">"Rex"</span>,<span class="st">"Uma"</span>)</span>
+<span id="cb1-20"><a href="#cb1-20" aria-hidden="true" tabindex="-1"></a>  last  <span class="ot">&lt;-</span> <span class="fu">c</span>(<span class="st">"Khan"</span>,<span class="st">"Ortiz"</span>,<span class="st">"Chen"</span>,<span class="st">"Diaz"</span>,<span class="st">"Patel"</span>,<span class="st">"Ali"</span>,<span class="st">"Brown"</span>,<span class="st">"Nash"</span>,<span class="st">"Reed"</span>,<span class="st">"Vega"</span>,</span>
+<span id="cb1-21"><a href="#cb1-21" aria-hidden="true" tabindex="-1"></a>             <span class="st">"Cole"</span>,<span class="st">"Frost"</span>,<span class="st">"Grant"</span>,<span class="st">"Hale"</span>,<span class="st">"Iqbal"</span>,<span class="st">"Jain"</span>,<span class="st">"Kerr"</span>,<span class="st">"Lund"</span>,<span class="st">"Mora"</span>,<span class="st">"Park"</span>)</span>
+<span id="cb1-22"><a href="#cb1-22" aria-hidden="true" tabindex="-1"></a>  sexes <span class="ot">&lt;-</span> <span class="fu">sample</span>(<span class="fu">c</span>(<span class="st">"male"</span>, <span class="st">"female"</span>), <span class="at">size =</span> n_patients, <span class="at">replace =</span> <span class="cn">TRUE</span>, <span class="at">prob =</span> <span class="fu">c</span>(<span class="fl">0.49</span>, <span class="fl">0.51</span>))</span>
+<span id="cb1-23"><a href="#cb1-23" aria-hidden="true" tabindex="-1"></a>  ages  <span class="ot">&lt;-</span> <span class="fu">sample</span>(<span class="dv">18</span><span class="sc">:</span><span class="dv">89</span>, <span class="at">size =</span> n_patients, <span class="at">replace =</span> <span class="cn">TRUE</span>)</span>
+<span id="cb1-24"><a href="#cb1-24" aria-hidden="true" tabindex="-1"></a>  <span class="co"># Columns:</span></span>
+<span id="cb1-25"><a href="#cb1-25" aria-hidden="true" tabindex="-1"></a>  <span class="co">#   patient_id  — unique ID, e.g. "P1000", "P1001"</span></span>
+<span id="cb1-26"><a href="#cb1-26" aria-hidden="true" tabindex="-1"></a>  <span class="co">#   given_name / family_name — randomly chosen from the name lists</span></span>
+<span id="cb1-27"><a href="#cb1-27" aria-hidden="true" tabindex="-1"></a>  <span class="co">#   sex, age — pre-generated vectors</span></span>
+<span id="cb1-28"><a href="#cb1-28" aria-hidden="true" tabindex="-1"></a>  <span class="co">#   birth_year — derived from age, assuming the reference year 2026</span></span>
+<span id="cb1-29"><a href="#cb1-29" aria-hidden="true" tabindex="-1"></a>  patients <span class="ot">&lt;-</span> <span class="fu">tibble</span>(</span>
+<span id="cb1-30"><a href="#cb1-30" aria-hidden="true" tabindex="-1"></a>    <span class="at">patient_id  =</span> <span class="fu">sprintf</span>(<span class="st">"P%d"</span>, <span class="dv">1000</span> <span class="sc">+</span> (<span class="dv">0</span><span class="sc">:</span>(n_patients <span class="sc">-</span> <span class="dv">1</span>))),</span>
+<span id="cb1-31"><a href="#cb1-31" aria-hidden="true" tabindex="-1"></a>    <span class="at">given_name  =</span> <span class="fu">sample</span>(first, <span class="at">size =</span> n_patients, <span class="at">replace =</span> <span class="cn">TRUE</span>),</span>
+<span id="cb1-32"><a href="#cb1-32" aria-hidden="true" tabindex="-1"></a>    <span class="at">family_name =</span> <span class="fu">sample</span>(last,  <span class="at">size =</span> n_patients, <span class="at">replace =</span> <span class="cn">TRUE</span>),</span>
+<span id="cb1-33"><a href="#cb1-33" aria-hidden="true" tabindex="-1"></a>    <span class="at">sex         =</span> sexes,</span>
+<span id="cb1-34"><a href="#cb1-34" aria-hidden="true" tabindex="-1"></a>    <span class="at">age         =</span> ages,</span>
+<span id="cb1-35"><a href="#cb1-35" aria-hidden="true" tabindex="-1"></a>    <span class="at">birth_year  =</span> <span class="dv">2026</span> <span class="sc">-</span> ages</span>
+<span id="cb1-36"><a href="#cb1-36" aria-hidden="true" tabindex="-1"></a>  )</span>
+<span id="cb1-37"><a href="#cb1-37" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-38"><a href="#cb1-38" aria-hidden="true" tabindex="-1"></a>  <span class="co"># --- encounters table ---</span></span>
+<span id="cb1-39"><a href="#cb1-39" aria-hidden="true" tabindex="-1"></a>  <span class="co"># Each patient gets 1–4 visits. Types and dates are random but internally consistent.</span></span>
+<span id="cb1-40"><a href="#cb1-40" aria-hidden="true" tabindex="-1"></a>  <span class="co">#   encounter_id    — unique, zero-padded (E00001, E00002, ...)</span></span>
+<span id="cb1-41"><a href="#cb1-41" aria-hidden="true" tabindex="-1"></a>  <span class="co">#   encounter_type  — ambulatory 55%, emergency 15%, inpatient 10%, wellness 20%</span></span>
+<span id="cb1-42"><a href="#cb1-42" aria-hidden="true" tabindex="-1"></a>  <span class="co">#   date            — a random day in a 3-year window starting 2023-01-01</span></span>
+<span id="cb1-43"><a href="#cb1-43" aria-hidden="true" tabindex="-1"></a>  enc_types <span class="ot">&lt;-</span> <span class="fu">c</span>(<span class="st">"ambulatory"</span>, <span class="st">"emergency"</span>, <span class="st">"inpatient"</span>, <span class="st">"wellness"</span>)</span>
+<span id="cb1-44"><a href="#cb1-44" aria-hidden="true" tabindex="-1"></a>  enc_list <span class="ot">&lt;-</span> <span class="fu">vector</span>(<span class="st">"list"</span>, <span class="dv">0</span>)</span>
+<span id="cb1-45"><a href="#cb1-45" aria-hidden="true" tabindex="-1"></a>  n <span class="ot">&lt;-</span> <span class="dv">0</span></span>
+<span id="cb1-46"><a href="#cb1-46" aria-hidden="true" tabindex="-1"></a>  <span class="cf">for</span> (pid <span class="cf">in</span> patients<span class="sc">$</span>patient_id) {</span>
+<span id="cb1-47"><a href="#cb1-47" aria-hidden="true" tabindex="-1"></a>    n_visits <span class="ot">&lt;-</span> <span class="fu">sample.int</span>(<span class="dv">4</span>, <span class="dv">1</span>)  <span class="co"># 1 to 4 encounters per patient</span></span>
+<span id="cb1-48"><a href="#cb1-48" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> (j <span class="cf">in</span> <span class="fu">seq_len</span>(n_visits)) {</span>
+<span id="cb1-49"><a href="#cb1-49" aria-hidden="true" tabindex="-1"></a>      n <span class="ot">&lt;-</span> n <span class="sc">+</span> <span class="dv">1</span></span>
+<span id="cb1-50"><a href="#cb1-50" aria-hidden="true" tabindex="-1"></a>      day <span class="ot">&lt;-</span> <span class="fu">sample</span>(<span class="dv">0</span><span class="sc">:</span>(<span class="dv">365</span> <span class="sc">*</span> <span class="dv">3</span> <span class="sc">-</span> <span class="dv">1</span>), <span class="dv">1</span>)  <span class="co"># offset within 3 years</span></span>
+<span id="cb1-51"><a href="#cb1-51" aria-hidden="true" tabindex="-1"></a>      enc_list[[n]] <span class="ot">&lt;-</span> <span class="fu">tibble</span>(</span>
+<span id="cb1-52"><a href="#cb1-52" aria-hidden="true" tabindex="-1"></a>        <span class="at">encounter_id =</span> <span class="fu">sprintf</span>(<span class="st">"E%05d"</span>, n),</span>
+<span id="cb1-53"><a href="#cb1-53" aria-hidden="true" tabindex="-1"></a>        <span class="at">patient_id =</span> pid,</span>
+<span id="cb1-54"><a href="#cb1-54" aria-hidden="true" tabindex="-1"></a>        <span class="at">encounter_type =</span> <span class="fu">sample</span>(enc_types, <span class="dv">1</span>, <span class="at">prob =</span> <span class="fu">c</span>(<span class="fl">0.55</span>, <span class="fl">0.15</span>, <span class="fl">0.10</span>, <span class="fl">0.20</span>)),</span>
+<span id="cb1-55"><a href="#cb1-55" aria-hidden="true" tabindex="-1"></a>        <span class="at">date =</span> <span class="fu">as.Date</span>(<span class="st">"2023-01-01"</span>) <span class="sc">+</span> day</span>
+<span id="cb1-56"><a href="#cb1-56" aria-hidden="true" tabindex="-1"></a>      )</span>
+<span id="cb1-57"><a href="#cb1-57" aria-hidden="true" tabindex="-1"></a>    }</span>
+<span id="cb1-58"><a href="#cb1-58" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb1-59"><a href="#cb1-59" aria-hidden="true" tabindex="-1"></a>  encounters <span class="ot">&lt;-</span> <span class="fu">bind_rows</span>(enc_list)</span>
+<span id="cb1-60"><a href="#cb1-60" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-61"><a href="#cb1-61" aria-hidden="true" tabindex="-1"></a>  <span class="co"># --- observations table ---</span></span>
+<span id="cb1-62"><a href="#cb1-62" aria-hidden="true" tabindex="-1"></a>  <span class="co"># Labs and vitals attached to encounters. Each row is (name, unit, lo, hi).</span></span>
+<span id="cb1-63"><a href="#cb1-63" aria-hidden="true" tabindex="-1"></a>  <span class="co"># A value is drawn uniformly in [lo, hi]; 70% of (encounter, measure) pairs exist</span></span>
+<span id="cb1-64"><a href="#cb1-64" aria-hidden="true" tabindex="-1"></a>  <span class="co"># so the table looks sparse the way a real EHR does.</span></span>
+<span id="cb1-65"><a href="#cb1-65" aria-hidden="true" tabindex="-1"></a>  obs_defs <span class="ot">&lt;-</span> <span class="fu">tribble</span>(</span>
+<span id="cb1-66"><a href="#cb1-66" aria-hidden="true" tabindex="-1"></a>    <span class="sc">~</span>name, <span class="sc">~</span>unit, <span class="sc">~</span>lo, <span class="sc">~</span>hi,</span>
+<span id="cb1-67"><a href="#cb1-67" aria-hidden="true" tabindex="-1"></a>    <span class="st">"Body height"</span>, <span class="st">"cm"</span>, <span class="dv">150</span>, <span class="dv">195</span>,</span>
+<span id="cb1-68"><a href="#cb1-68" aria-hidden="true" tabindex="-1"></a>    <span class="st">"Body weight"</span>, <span class="st">"kg"</span>, <span class="dv">50</span>, <span class="dv">110</span>,</span>
+<span id="cb1-69"><a href="#cb1-69" aria-hidden="true" tabindex="-1"></a>    <span class="st">"Systolic blood pressure"</span>, <span class="st">"mmHg"</span>, <span class="dv">100</span>, <span class="dv">165</span>,</span>
+<span id="cb1-70"><a href="#cb1-70" aria-hidden="true" tabindex="-1"></a>    <span class="st">"Heart rate"</span>, <span class="st">"/min"</span>, <span class="dv">55</span>, <span class="dv">100</span>,</span>
+<span id="cb1-71"><a href="#cb1-71" aria-hidden="true" tabindex="-1"></a>    <span class="st">"Hemoglobin A1c"</span>, <span class="st">"%"</span>, <span class="fl">4.8</span>, <span class="fl">9.5</span></span>
+<span id="cb1-72"><a href="#cb1-72" aria-hidden="true" tabindex="-1"></a>  )</span>
+<span id="cb1-73"><a href="#cb1-73" aria-hidden="true" tabindex="-1"></a>  obs_list <span class="ot">&lt;-</span> <span class="fu">vector</span>(<span class="st">"list"</span>, <span class="dv">0</span>)</span>
+<span id="cb1-74"><a href="#cb1-74" aria-hidden="true" tabindex="-1"></a>  m <span class="ot">&lt;-</span> <span class="dv">0</span></span>
+<span id="cb1-75"><a href="#cb1-75" aria-hidden="true" tabindex="-1"></a>  <span class="cf">for</span> (i <span class="cf">in</span> <span class="fu">seq_len</span>(<span class="fu">nrow</span>(encounters))) {</span>
+<span id="cb1-76"><a href="#cb1-76" aria-hidden="true" tabindex="-1"></a>    e <span class="ot">&lt;-</span> encounters[i, ]</span>
+<span id="cb1-77"><a href="#cb1-77" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> (k <span class="cf">in</span> <span class="fu">seq_len</span>(<span class="fu">nrow</span>(obs_defs))) {</span>
+<span id="cb1-78"><a href="#cb1-78" aria-hidden="true" tabindex="-1"></a>      <span class="cf">if</span> (<span class="fu">runif</span>(<span class="dv">1</span>) <span class="sc">&lt;</span> <span class="fl">0.7</span>) {</span>
+<span id="cb1-79"><a href="#cb1-79" aria-hidden="true" tabindex="-1"></a>        m <span class="ot">&lt;-</span> m <span class="sc">+</span> <span class="dv">1</span></span>
+<span id="cb1-80"><a href="#cb1-80" aria-hidden="true" tabindex="-1"></a>        obs_list[[m]] <span class="ot">&lt;-</span> <span class="fu">tibble</span>(</span>
+<span id="cb1-81"><a href="#cb1-81" aria-hidden="true" tabindex="-1"></a>          <span class="at">observation_id =</span> <span class="fu">sprintf</span>(<span class="st">"O%06d"</span>, m),</span>
+<span id="cb1-82"><a href="#cb1-82" aria-hidden="true" tabindex="-1"></a>          <span class="at">encounter_id =</span> e<span class="sc">$</span>encounter_id,</span>
+<span id="cb1-83"><a href="#cb1-83" aria-hidden="true" tabindex="-1"></a>          <span class="at">patient_id =</span> e<span class="sc">$</span>patient_id,</span>
+<span id="cb1-84"><a href="#cb1-84" aria-hidden="true" tabindex="-1"></a>          <span class="at">observation =</span> obs_defs<span class="sc">$</span>name[k],</span>
+<span id="cb1-85"><a href="#cb1-85" aria-hidden="true" tabindex="-1"></a>          <span class="at">value =</span> <span class="fu">round</span>(<span class="fu">runif</span>(<span class="dv">1</span>, obs_defs<span class="sc">$</span>lo[k], obs_defs<span class="sc">$</span>hi[k]), <span class="dv">1</span>),</span>
+<span id="cb1-86"><a href="#cb1-86" aria-hidden="true" tabindex="-1"></a>          <span class="at">unit =</span> obs_defs<span class="sc">$</span>unit[k],</span>
+<span id="cb1-87"><a href="#cb1-87" aria-hidden="true" tabindex="-1"></a>          <span class="at">date =</span> e<span class="sc">$</span>date</span>
+<span id="cb1-88"><a href="#cb1-88" aria-hidden="true" tabindex="-1"></a>        )</span>
+<span id="cb1-89"><a href="#cb1-89" aria-hidden="true" tabindex="-1"></a>      }</span>
+<span id="cb1-90"><a href="#cb1-90" aria-hidden="true" tabindex="-1"></a>    }</span>
+<span id="cb1-91"><a href="#cb1-91" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb1-92"><a href="#cb1-92" aria-hidden="true" tabindex="-1"></a>  observations <span class="ot">&lt;-</span> <span class="fu">bind_rows</span>(obs_list)</span>
+<span id="cb1-93"><a href="#cb1-93" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-94"><a href="#cb1-94" aria-hidden="true" tabindex="-1"></a>  <span class="co"># --- conditions table ---</span></span>
+<span id="cb1-95"><a href="#cb1-95" aria-hidden="true" tabindex="-1"></a>  <span class="co"># Each patient is assigned 0–3 unique diagnoses from a small pool.</span></span>
+<span id="cb1-96"><a href="#cb1-96" aria-hidden="true" tabindex="-1"></a>  cond_pool <span class="ot">&lt;-</span> <span class="fu">c</span>(<span class="st">"Essential hypertension"</span>, <span class="st">"Type 2 diabetes mellitus"</span>, <span class="st">"Asthma"</span>,</span>
+<span id="cb1-97"><a href="#cb1-97" aria-hidden="true" tabindex="-1"></a>                 <span class="st">"Acute bronchitis"</span>, <span class="st">"Major depressive disorder"</span>, <span class="st">"Osteoarthritis"</span>,</span>
+<span id="cb1-98"><a href="#cb1-98" aria-hidden="true" tabindex="-1"></a>                 <span class="st">"Chronic kidney disease"</span>, <span class="st">"Anemia"</span>)</span>
+<span id="cb1-99"><a href="#cb1-99" aria-hidden="true" tabindex="-1"></a>  cond_list <span class="ot">&lt;-</span> <span class="fu">vector</span>(<span class="st">"list"</span>, <span class="dv">0</span>)</span>
+<span id="cb1-100"><a href="#cb1-100" aria-hidden="true" tabindex="-1"></a>  cn <span class="ot">&lt;-</span> <span class="dv">0</span></span>
+<span id="cb1-101"><a href="#cb1-101" aria-hidden="true" tabindex="-1"></a>  <span class="cf">for</span> (pid <span class="cf">in</span> patients<span class="sc">$</span>patient_id) {</span>
+<span id="cb1-102"><a href="#cb1-102" aria-hidden="true" tabindex="-1"></a>    n_cond <span class="ot">&lt;-</span> <span class="fu">sample</span>(<span class="dv">0</span><span class="sc">:</span><span class="dv">3</span>, <span class="dv">1</span>)</span>
+<span id="cb1-103"><a href="#cb1-103" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> (n_cond <span class="sc">&gt;</span> <span class="dv">0</span>) {</span>
+<span id="cb1-104"><a href="#cb1-104" aria-hidden="true" tabindex="-1"></a>      chosen <span class="ot">&lt;-</span> <span class="fu">sample</span>(cond_pool, <span class="at">size =</span> n_cond, <span class="at">replace =</span> <span class="cn">FALSE</span>)</span>
+<span id="cb1-105"><a href="#cb1-105" aria-hidden="true" tabindex="-1"></a>      <span class="cf">for</span> (cc <span class="cf">in</span> chosen) {</span>
+<span id="cb1-106"><a href="#cb1-106" aria-hidden="true" tabindex="-1"></a>        cn <span class="ot">&lt;-</span> cn <span class="sc">+</span> <span class="dv">1</span></span>
+<span id="cb1-107"><a href="#cb1-107" aria-hidden="true" tabindex="-1"></a>        cond_list[[cn]] <span class="ot">&lt;-</span> <span class="fu">tibble</span>(<span class="at">condition_id =</span> <span class="fu">sprintf</span>(<span class="st">"C%05d"</span>, cn), <span class="at">patient_id =</span> pid, <span class="at">condition =</span> cc)</span>
+<span id="cb1-108"><a href="#cb1-108" aria-hidden="true" tabindex="-1"></a>      }</span>
+<span id="cb1-109"><a href="#cb1-109" aria-hidden="true" tabindex="-1"></a>    }</span>
+<span id="cb1-110"><a href="#cb1-110" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb1-111"><a href="#cb1-111" aria-hidden="true" tabindex="-1"></a>  conditions <span class="ot">&lt;-</span> <span class="fu">bind_rows</span>(cond_list)</span>
+<span id="cb1-112"><a href="#cb1-112" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-113"><a href="#cb1-113" aria-hidden="true" tabindex="-1"></a>  <span class="co"># --- medications table ---</span></span>
+<span id="cb1-114"><a href="#cb1-114" aria-hidden="true" tabindex="-1"></a>  <span class="co"># Same pattern as conditions: 0–3 unique drugs per patient.</span></span>
+<span id="cb1-115"><a href="#cb1-115" aria-hidden="true" tabindex="-1"></a>  med_pool <span class="ot">&lt;-</span> <span class="fu">c</span>(<span class="st">"Lisinopril"</span>, <span class="st">"Metformin"</span>, <span class="st">"Albuterol"</span>, <span class="st">"Atorvastatin"</span>,</span>
+<span id="cb1-116"><a href="#cb1-116" aria-hidden="true" tabindex="-1"></a>                <span class="st">"Sertraline"</span>, <span class="st">"Amoxicillin"</span>, <span class="st">"Ibuprofen"</span>, <span class="st">"Hydrochlorothiazide"</span>)</span>
+<span id="cb1-117"><a href="#cb1-117" aria-hidden="true" tabindex="-1"></a>  med_list <span class="ot">&lt;-</span> <span class="fu">vector</span>(<span class="st">"list"</span>, <span class="dv">0</span>)</span>
+<span id="cb1-118"><a href="#cb1-118" aria-hidden="true" tabindex="-1"></a>  mn <span class="ot">&lt;-</span> <span class="dv">0</span></span>
+<span id="cb1-119"><a href="#cb1-119" aria-hidden="true" tabindex="-1"></a>  <span class="cf">for</span> (pid <span class="cf">in</span> patients<span class="sc">$</span>patient_id) {</span>
+<span id="cb1-120"><a href="#cb1-120" aria-hidden="true" tabindex="-1"></a>    n_med <span class="ot">&lt;-</span> <span class="fu">sample</span>(<span class="dv">0</span><span class="sc">:</span><span class="dv">3</span>, <span class="dv">1</span>)</span>
+<span id="cb1-121"><a href="#cb1-121" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> (n_med <span class="sc">&gt;</span> <span class="dv">0</span>) {</span>
+<span id="cb1-122"><a href="#cb1-122" aria-hidden="true" tabindex="-1"></a>      chosen <span class="ot">&lt;-</span> <span class="fu">sample</span>(med_pool, <span class="at">size =</span> n_med, <span class="at">replace =</span> <span class="cn">FALSE</span>)</span>
+<span id="cb1-123"><a href="#cb1-123" aria-hidden="true" tabindex="-1"></a>      <span class="cf">for</span> (mm <span class="cf">in</span> chosen) {</span>
+<span id="cb1-124"><a href="#cb1-124" aria-hidden="true" tabindex="-1"></a>        mn <span class="ot">&lt;-</span> mn <span class="sc">+</span> <span class="dv">1</span></span>
+<span id="cb1-125"><a href="#cb1-125" aria-hidden="true" tabindex="-1"></a>        med_list[[mn]] <span class="ot">&lt;-</span> <span class="fu">tibble</span>(<span class="at">medication_id =</span> <span class="fu">sprintf</span>(<span class="st">"M%05d"</span>, mn), <span class="at">patient_id =</span> pid, <span class="at">medication =</span> mm)</span>
+<span id="cb1-126"><a href="#cb1-126" aria-hidden="true" tabindex="-1"></a>      }</span>
+<span id="cb1-127"><a href="#cb1-127" aria-hidden="true" tabindex="-1"></a>    }</span>
+<span id="cb1-128"><a href="#cb1-128" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb1-129"><a href="#cb1-129" aria-hidden="true" tabindex="-1"></a>  medications <span class="ot">&lt;-</span> <span class="fu">bind_rows</span>(med_list)</span>
+<span id="cb1-130"><a href="#cb1-130" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-131"><a href="#cb1-131" aria-hidden="true" tabindex="-1"></a>  <span class="fu">list</span>(</span>
+<span id="cb1-132"><a href="#cb1-132" aria-hidden="true" tabindex="-1"></a>    <span class="at">patients =</span> patients,</span>
+<span id="cb1-133"><a href="#cb1-133" aria-hidden="true" tabindex="-1"></a>    <span class="at">encounters =</span> encounters,</span>
+<span id="cb1-134"><a href="#cb1-134" aria-hidden="true" tabindex="-1"></a>    <span class="at">observations =</span> observations,</span>
+<span id="cb1-135"><a href="#cb1-135" aria-hidden="true" tabindex="-1"></a>    <span class="at">conditions =</span> conditions,</span>
+<span id="cb1-136"><a href="#cb1-136" aria-hidden="true" tabindex="-1"></a>    <span class="at">medications =</span> medications</span>
+<span id="cb1-137"><a href="#cb1-137" aria-hidden="true" tabindex="-1"></a>  )</span>
+<span id="cb1-138"><a href="#cb1-138" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb1-139"><a href="#cb1-139" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-140"><a href="#cb1-140" aria-hidden="true" tabindex="-1"></a><span class="co"># Generate the five linked tables. Each notebook in this series starts from here.</span></span>
+<span id="cb1-141"><a href="#cb1-141" aria-hidden="true" tabindex="-1"></a>ehr <span class="ot">&lt;-</span> <span class="fu">make_synthetic_ehr</span>()</span>
+<span id="cb1-142"><a href="#cb1-142" aria-hidden="true" tabindex="-1"></a><span class="fu">cat</span>(<span class="st">"Tables:"</span>, <span class="fu">paste</span>(<span class="fu">sprintf</span>(<span class="st">"%s (%d rows)"</span>, <span class="fu">names</span>(ehr), <span class="fu">sapply</span>(ehr, nrow)), <span class="at">collapse =</span> <span class="st">", "</span>), <span class="st">"</span><span class="sc">\n</span><span class="st">"</span>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>Tables: patients (200 rows), encounters (505 rows), observations (1753 rows), conditions (299 rows), medications (312 rows) </code></pre>
+</div>
+</div>
+</section>
+<section id="why-a-common-data-model" class="level2">
+<h2 class="anchored" data-anchor-id="why-a-common-data-model">7.1 Why a common data model</h2>
+<p>A Common Data Model (CDM) standardizes database structure across multiple sites. Without a CDM, each institution in a multi-site study needs to write its own custom data extraction code, creating duplication and inconsistency. With a CDM, every site converts its local data into the same format just one time. After this initial mapping, the same analytical tools and scripts can be used everywhere, greatly simplifying multicenter research. This is the approach used by OHDSI network studies: map once, then share analyses.</p>
+<p><strong>The initial investment in mapping enables efficient, reusable, and shareable analytics across sites.</strong></p>
+</section>
+<section id="the-omop-vocabulary-concept" class="level2">
+<h2 class="anchored" data-anchor-id="the-omop-vocabulary-concept">7.2 The OMOP vocabulary (<code>concept</code>)</h2>
+<p>At the heart of the OMOP Common Data Model (CDM) lies a <strong>standardized vocabulary</strong>, which plays a crucial role in harmonizing clinical data from diverse sources. In OMOP, every meaningful clinical entity—whether it pertains to a diagnosis, measurement, medication, or demographic attribute—is represented by a numeric identifier called a <code>concept_id</code>.</p>
+<p>This approach ensures that every clinical fact stored in an OMOP database is linked to a specific, well-defined concept. Instead of storing local or proprietary codes (such as ICD-10 for diagnoses, SNOMED for conditions, LOINC for lab tests, or RxNorm for medications), OMOP requires that all source codes be mapped to <strong>standard concepts</strong> from its extensive vocabulary. Each standard concept is assigned a unique <code>concept_id</code> and grouped into meaningful domains (e.g., Condition, Measurement, Drug, Gender).</p>
+<p>By forcing every participating organization to translate its source data into this shared vocabulary, OMOP enables seamless data integration and cross-site analytics. Analysts and researchers can write a single query or analysis pipeline that runs unmodified on any OMOP-mapped dataset, regardless of local idiosyncrasies or coding systems. This shared language eliminates ambiguity, fosters reproducibility, and is the foundation for interoperable, multi-center observational research across the international OHDSI community.</p>
+<div class="cell">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb3"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="co"># At OMOP's center is a CONCEPT table: every clinical fact is a concept_id.</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="co"># Source codes (ICD, SNOMED, LOINC, RxNorm) map to these standard IDs so every</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a><span class="co"># site speaks the same language.</span></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a><span class="co">#</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a><span class="co"># Columns:</span></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a><span class="co">#   concept_id     — the integer that other OMOP tables store as a foreign key</span></span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a><span class="co">#   concept_name   — human-readable label</span></span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a><span class="co">#   domain_id      — which OMOP table this concept belongs in</span></span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a><span class="co">#                    (Gender -&gt; person, Condition -&gt; condition_occurrence, ...)</span></span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a><span class="co">#   vocabulary_id  — which coding system it came from</span></span>
+<span id="cb3-11"><a href="#cb3-11" aria-hidden="true" tabindex="-1"></a><span class="co">#</span></span>
+<span id="cb3-12"><a href="#cb3-12" aria-hidden="true" tabindex="-1"></a><span class="co"># These IDs are ILLUSTRATIVE. Gender 8507/8532 and a few conditions match real</span></span>
+<span id="cb3-13"><a href="#cb3-13" aria-hidden="true" tabindex="-1"></a><span class="co"># OHDSI Athena IDs; treat the rest as a teaching stand-in, not the source of truth.</span></span>
+<span id="cb3-14"><a href="#cb3-14" aria-hidden="true" tabindex="-1"></a>concept <span class="ot">&lt;-</span> <span class="fu">tribble</span>(</span>
+<span id="cb3-15"><a href="#cb3-15" aria-hidden="true" tabindex="-1"></a>  <span class="sc">~</span>concept_id, <span class="sc">~</span>concept_name,               <span class="sc">~</span>domain_id,    <span class="sc">~</span>vocabulary_id,</span>
+<span id="cb3-16"><a href="#cb3-16" aria-hidden="true" tabindex="-1"></a>  <span class="dv">8507</span>,        <span class="st">"MALE"</span>,                      <span class="st">"Gender"</span>,      <span class="st">"Gender"</span>,</span>
+<span id="cb3-17"><a href="#cb3-17" aria-hidden="true" tabindex="-1"></a>  <span class="dv">8532</span>,        <span class="st">"FEMALE"</span>,                    <span class="st">"Gender"</span>,      <span class="st">"Gender"</span>,</span>
+<span id="cb3-18"><a href="#cb3-18" aria-hidden="true" tabindex="-1"></a>  <span class="dv">320128</span>,      <span class="st">"Essential hypertension"</span>,    <span class="st">"Condition"</span>,   <span class="st">"SNOMED"</span>,</span>
+<span id="cb3-19"><a href="#cb3-19" aria-hidden="true" tabindex="-1"></a>  <span class="dv">201826</span>,      <span class="st">"Type 2 diabetes mellitus"</span>,  <span class="st">"Condition"</span>,   <span class="st">"SNOMED"</span>,</span>
+<span id="cb3-20"><a href="#cb3-20" aria-hidden="true" tabindex="-1"></a>  <span class="dv">317009</span>,      <span class="st">"Asthma"</span>,                    <span class="st">"Condition"</span>,   <span class="st">"SNOMED"</span>,</span>
+<span id="cb3-21"><a href="#cb3-21" aria-hidden="true" tabindex="-1"></a>  <span class="dv">3004410</span>,     <span class="st">"Hemoglobin A1c"</span>,            <span class="st">"Measurement"</span>, <span class="st">"LOINC"</span>,</span>
+<span id="cb3-22"><a href="#cb3-22" aria-hidden="true" tabindex="-1"></a>  <span class="dv">3004249</span>,     <span class="st">"Systolic blood pressure"</span>,   <span class="st">"Measurement"</span>, <span class="st">"LOINC"</span>,</span>
+<span id="cb3-23"><a href="#cb3-23" aria-hidden="true" tabindex="-1"></a>  <span class="dv">3025315</span>,     <span class="st">"Body weight"</span>,               <span class="st">"Measurement"</span>, <span class="st">"LOINC"</span>,</span>
+<span id="cb3-24"><a href="#cb3-24" aria-hidden="true" tabindex="-1"></a>  <span class="dv">1308216</span>,     <span class="st">"Lisinopril"</span>,                <span class="st">"Drug"</span>,        <span class="st">"RxNorm"</span>,</span>
+<span id="cb3-25"><a href="#cb3-25" aria-hidden="true" tabindex="-1"></a>  <span class="dv">1503297</span>,     <span class="st">"Metformin"</span>,                 <span class="st">"Drug"</span>,        <span class="st">"RxNorm"</span></span>
+<span id="cb3-26"><a href="#cb3-26" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb3-27"><a href="#cb3-27" aria-hidden="true" tabindex="-1"></a>concept</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="cell-output cell-output-stdout">
+<pre><code># A tibble: 10 × 4
+   concept_id concept_name             domain_id   vocabulary_id
+        &lt;dbl&gt; &lt;chr&gt;                    &lt;chr&gt;       &lt;chr&gt;        
+ 1       8507 MALE                     Gender      Gender       
+ 2       8532 FEMALE                   Gender      Gender       
+ 3     320128 Essential hypertension   Condition   SNOMED       
+ 4     201826 Type 2 diabetes mellitus Condition   SNOMED       
+ 5     317009 Asthma                   Condition   SNOMED       
+ 6    3004410 Hemoglobin A1c           Measurement LOINC        
+ 7    3004249 Systolic blood pressure  Measurement LOINC        
+ 8    3025315 Body weight              Measurement LOINC        
+ 9    1308216 Lisinopril               Drug        RxNorm       
+10    1503297 Metformin                Drug        RxNorm       </code></pre>
+</div>
+</div>
+</section>
+<section id="building-the-omop-tables" class="level2">
+<h2 class="anchored" data-anchor-id="building-the-omop-tables">7.3 Building the OMOP tables</h2>
+<p>At this stage, we translate our original source tables into the standardized OMOP tables. String-based IDs from the source data (like patient or visit codes) are converted into OMOP-compliant integer foreign keys—such as <code>person_id</code> and <code>visit_occurrence_id</code>. This harmonization enables reliable joins between tables and consistency across datasets.</p>
+<section id="milestone-1---person" class="level3">
+<h3 class="anchored" data-anchor-id="milestone-1---person">Milestone 1 - PERSON</h3>
+<p>PERSON: This OMOP table standardizes patient identities for all subsequent data integration. Each patient from the source data is assigned a unique integer <code>person_id</code>, replacing any non-standard string IDs. The table also stores their gender as a standard concept ID (from the CONCEPT table), year of birth, and the original source identifier for traceability.</p>
+<div class="cell">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb5"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="co"># PERSON is OMOP's patient table. Source string IDs (P1000, P1001, ...) become</span></span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a><span class="co"># integer person_id values. Everything else in the CDM will join on person_id.</span></span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>patients <span class="ot">&lt;-</span> ehr<span class="sc">$</span>patients</span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a>patients<span class="sc">$</span>person_id <span class="ot">&lt;-</span> <span class="fu">seq_len</span>(<span class="fu">nrow</span>(patients))  <span class="co"># 1, 2, 3, ... n</span></span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a><span class="co"># id_map lets later tables translate "P1000" -&gt; 1 without looking up patients again.</span></span>
+<span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a>id_map <span class="ot">&lt;-</span> <span class="fu">setNames</span>(patients<span class="sc">$</span>person_id, patients<span class="sc">$</span>patient_id)</span>
+<span id="cb5-8"><a href="#cb5-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-9"><a href="#cb5-9" aria-hidden="true" tabindex="-1"></a><span class="co"># sex strings -&gt; standard gender concept_ids from the CONCEPT table above</span></span>
+<span id="cb5-10"><a href="#cb5-10" aria-hidden="true" tabindex="-1"></a>gender_concept <span class="ot">&lt;-</span> <span class="fu">c</span>(<span class="at">male =</span> <span class="dv">8507</span>, <span class="at">female =</span> <span class="dv">8532</span>)</span>
+<span id="cb5-11"><a href="#cb5-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-12"><a href="#cb5-12" aria-hidden="true" tabindex="-1"></a>person <span class="ot">&lt;-</span> <span class="fu">tibble</span>(</span>
+<span id="cb5-13"><a href="#cb5-13" aria-hidden="true" tabindex="-1"></a>  <span class="at">person_id =</span> patients<span class="sc">$</span>person_id,</span>
+<span id="cb5-14"><a href="#cb5-14" aria-hidden="true" tabindex="-1"></a>  <span class="at">gender_concept_id =</span> <span class="fu">unname</span>(gender_concept[patients<span class="sc">$</span>sex]),  <span class="co"># 8507 or 8532</span></span>
+<span id="cb5-15"><a href="#cb5-15" aria-hidden="true" tabindex="-1"></a>  <span class="at">year_of_birth =</span> patients<span class="sc">$</span>birth_year,</span>
+<span id="cb5-16"><a href="#cb5-16" aria-hidden="true" tabindex="-1"></a>  <span class="co"># person_source_value keeps the original ID so you can audit the mapping</span></span>
+<span id="cb5-17"><a href="#cb5-17" aria-hidden="true" tabindex="-1"></a>  <span class="at">person_source_value =</span> patients<span class="sc">$</span>patient_id</span>
+<span id="cb5-18"><a href="#cb5-18" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb5-19"><a href="#cb5-19" aria-hidden="true" tabindex="-1"></a><span class="fu">cat</span>(<span class="st">"PERSON table:</span><span class="sc">\n</span><span class="st">"</span>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>PERSON table:</code></pre>
+</div>
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb7"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="fu">head</span>(person)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="cell-output cell-output-stdout">
+<pre><code># A tibble: 6 × 4
+  person_id gender_concept_id year_of_birth person_source_value
+      &lt;int&gt;             &lt;dbl&gt;         &lt;dbl&gt; &lt;chr&gt;              
+1         1              8507          1985 P1000              
+2         2              8507          1984 P1001              
+3         3              8532          1948 P1002              
+4         4              8507          1947 P1003              
+5         5              8507          1995 P1004              
+6         6              8507          1975 P1005              </code></pre>
+</div>
+</div>
+</section>
+<section id="milestone-2---visit_occurrence-condition_occurrence-and-measurement" class="level3">
+<h3 class="anchored" data-anchor-id="milestone-2---visit_occurrence-condition_occurrence-and-measurement">Milestone 2 - VISIT_OCCURRENCE, CONDITION_OCCURRENCE, and MEASUREMENT</h3>
+<p>VISIT_OCCURRENCE: This OMOP table captures information about each patient encounter or visit. Each encounter from the source data is assigned a unique integer visit_occurrence_id. The type of visit is mapped to a standard visit_concept_id (e.g., inpatient, outpatient, emergency) for interoperability. Each row links the visit back to the patient (person_id) and records the start date.</p>
+<p>CONDITION_OCCURRENCE: This OMOP table standardizes diagnoses for patients based on their encounters. Each condition from the source data is mapped to a standard OMOP concept_id, whenever possible. Only diagnoses with a recognized standard concept are retained, and the original label is kept for traceability. Each row links the condition to the patient (person_id).</p>
+<p>MEASUREMENT: This OMOP table holds quantitative labs and vitals (A1c, blood pressure, weight). Source observation labels are mapped to standard concept IDs. Measures that are not in our tiny vocabulary (heart rate, height) are dropped — the same unmapped-rate signal as for conditions.</p>
+<div class="cell">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb9"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="co"># VISIT_OCCURRENCE is OMOP's encounter table.</span></span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a><span class="co"># visit_concept_id uses standard OMOP visit concepts:</span></span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a><span class="co">#   9201 inpatient, 9202 outpatient/ambulatory/wellness, 9203 emergency</span></span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a>visit_concept <span class="ot">&lt;-</span> <span class="fu">c</span>(<span class="at">ambulatory =</span> <span class="dv">9202</span>, <span class="at">emergency =</span> <span class="dv">9203</span>, <span class="at">inpatient =</span> <span class="dv">9201</span>, <span class="at">wellness =</span> <span class="dv">9202</span>)</span>
+<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a>enc <span class="ot">&lt;-</span> ehr<span class="sc">$</span>encounters</span>
+<span id="cb9-7"><a href="#cb9-7" aria-hidden="true" tabindex="-1"></a>enc<span class="sc">$</span>visit_occurrence_id <span class="ot">&lt;-</span> <span class="fu">seq_len</span>(<span class="fu">nrow</span>(enc))</span>
+<span id="cb9-8"><a href="#cb9-8" aria-hidden="true" tabindex="-1"></a>enc<span class="sc">$</span>person_id <span class="ot">&lt;-</span> <span class="fu">unname</span>(id_map[enc<span class="sc">$</span>patient_id])  <span class="co"># P1000 -&gt; 1, via the map from PERSON</span></span>
+<span id="cb9-9"><a href="#cb9-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-10"><a href="#cb9-10" aria-hidden="true" tabindex="-1"></a>visit_occurrence <span class="ot">&lt;-</span> <span class="fu">tibble</span>(</span>
+<span id="cb9-11"><a href="#cb9-11" aria-hidden="true" tabindex="-1"></a>  <span class="at">visit_occurrence_id =</span> enc<span class="sc">$</span>visit_occurrence_id,</span>
+<span id="cb9-12"><a href="#cb9-12" aria-hidden="true" tabindex="-1"></a>  <span class="at">person_id =</span> enc<span class="sc">$</span>person_id,</span>
+<span id="cb9-13"><a href="#cb9-13" aria-hidden="true" tabindex="-1"></a>  <span class="at">visit_concept_id =</span> <span class="fu">unname</span>(visit_concept[enc<span class="sc">$</span>encounter_type]),</span>
+<span id="cb9-14"><a href="#cb9-14" aria-hidden="true" tabindex="-1"></a>  <span class="at">visit_start_date =</span> <span class="fu">as.Date</span>(enc<span class="sc">$</span>date)</span>
+<span id="cb9-15"><a href="#cb9-15" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb9-16"><a href="#cb9-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-17"><a href="#cb9-17" aria-hidden="true" tabindex="-1"></a><span class="co"># CONDITION_OCCURRENCE: source diagnosis labels -&gt; standard concept_ids.</span></span>
+<span id="cb9-18"><a href="#cb9-18" aria-hidden="true" tabindex="-1"></a><span class="co"># Only three conditions are in our tiny vocabulary; the rest will map to NA</span></span>
+<span id="cb9-19"><a href="#cb9-19" aria-hidden="true" tabindex="-1"></a><span class="co"># and drop out. That drop is itself a data-quality signal (unmapped rate).</span></span>
+<span id="cb9-20"><a href="#cb9-20" aria-hidden="true" tabindex="-1"></a>cond_to_concept <span class="ot">&lt;-</span> <span class="fu">c</span>(</span>
+<span id="cb9-21"><a href="#cb9-21" aria-hidden="true" tabindex="-1"></a>  <span class="st">"Essential hypertension"</span> <span class="ot">=</span> <span class="dv">320128</span>,</span>
+<span id="cb9-22"><a href="#cb9-22" aria-hidden="true" tabindex="-1"></a>  <span class="st">"Type 2 diabetes mellitus"</span> <span class="ot">=</span> <span class="dv">201826</span>,</span>
+<span id="cb9-23"><a href="#cb9-23" aria-hidden="true" tabindex="-1"></a>  <span class="st">"Asthma"</span> <span class="ot">=</span> <span class="dv">317009</span></span>
+<span id="cb9-24"><a href="#cb9-24" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb9-25"><a href="#cb9-25" aria-hidden="true" tabindex="-1"></a>cond <span class="ot">&lt;-</span> ehr<span class="sc">$</span>conditions</span>
+<span id="cb9-26"><a href="#cb9-26" aria-hidden="true" tabindex="-1"></a>cond<span class="sc">$</span>person_id <span class="ot">&lt;-</span> <span class="fu">unname</span>(id_map[cond<span class="sc">$</span>patient_id])</span>
+<span id="cb9-27"><a href="#cb9-27" aria-hidden="true" tabindex="-1"></a>cond<span class="sc">$</span>condition_concept_id <span class="ot">&lt;-</span> <span class="fu">unname</span>(cond_to_concept[cond<span class="sc">$</span>condition])  <span class="co"># unmapped -&gt; NA</span></span>
+<span id="cb9-28"><a href="#cb9-28" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-29"><a href="#cb9-29" aria-hidden="true" tabindex="-1"></a>condition_occurrence <span class="ot">&lt;-</span> cond <span class="sc">%&gt;%</span></span>
+<span id="cb9-30"><a href="#cb9-30" aria-hidden="true" tabindex="-1"></a>  <span class="fu">filter</span>(<span class="sc">!</span><span class="fu">is.na</span>(condition_concept_id)) <span class="sc">%&gt;%</span>  <span class="co"># keep only mapped diagnoses</span></span>
+<span id="cb9-31"><a href="#cb9-31" aria-hidden="true" tabindex="-1"></a>  <span class="fu">mutate</span>(<span class="at">condition_concept_id =</span> <span class="fu">as.integer</span>(condition_concept_id)) <span class="sc">%&gt;%</span></span>
+<span id="cb9-32"><a href="#cb9-32" aria-hidden="true" tabindex="-1"></a>  <span class="fu">select</span>(person_id, condition_concept_id, <span class="at">condition_source_value =</span> condition)  <span class="co"># provenance</span></span>
+<span id="cb9-33"><a href="#cb9-33" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-34"><a href="#cb9-34" aria-hidden="true" tabindex="-1"></a><span class="co"># MEASUREMENT holds quantitative labs and vitals (A1c, blood pressure, weight).</span></span>
+<span id="cb9-35"><a href="#cb9-35" aria-hidden="true" tabindex="-1"></a><span class="co"># Heart rate and height are in the source observations but not in our tiny</span></span>
+<span id="cb9-36"><a href="#cb9-36" aria-hidden="true" tabindex="-1"></a><span class="co"># concept table, so they are filtered out — same unmapped pattern as conditions.</span></span>
+<span id="cb9-37"><a href="#cb9-37" aria-hidden="true" tabindex="-1"></a>meas_to_concept <span class="ot">&lt;-</span> <span class="fu">c</span>(</span>
+<span id="cb9-38"><a href="#cb9-38" aria-hidden="true" tabindex="-1"></a>  <span class="st">"Hemoglobin A1c"</span> <span class="ot">=</span> <span class="dv">3004410</span>,</span>
+<span id="cb9-39"><a href="#cb9-39" aria-hidden="true" tabindex="-1"></a>  <span class="st">"Systolic blood pressure"</span> <span class="ot">=</span> <span class="dv">3004249</span>,</span>
+<span id="cb9-40"><a href="#cb9-40" aria-hidden="true" tabindex="-1"></a>  <span class="st">"Body weight"</span> <span class="ot">=</span> <span class="dv">3025315</span></span>
+<span id="cb9-41"><a href="#cb9-41" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb9-42"><a href="#cb9-42" aria-hidden="true" tabindex="-1"></a>obs <span class="ot">&lt;-</span> ehr<span class="sc">$</span>observations</span>
+<span id="cb9-43"><a href="#cb9-43" aria-hidden="true" tabindex="-1"></a>obs<span class="sc">$</span>person_id <span class="ot">&lt;-</span> <span class="fu">unname</span>(id_map[obs<span class="sc">$</span>patient_id])</span>
+<span id="cb9-44"><a href="#cb9-44" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-45"><a href="#cb9-45" aria-hidden="true" tabindex="-1"></a>measurement <span class="ot">&lt;-</span> obs <span class="sc">%&gt;%</span></span>
+<span id="cb9-46"><a href="#cb9-46" aria-hidden="true" tabindex="-1"></a>  <span class="fu">filter</span>(observation <span class="sc">%in%</span> <span class="fu">names</span>(meas_to_concept)) <span class="sc">%&gt;%</span>  <span class="co"># keep only mapped measures</span></span>
+<span id="cb9-47"><a href="#cb9-47" aria-hidden="true" tabindex="-1"></a>  <span class="fu">mutate</span>(<span class="at">measurement_concept_id =</span> <span class="fu">unname</span>(meas_to_concept[observation])) <span class="sc">%&gt;%</span></span>
+<span id="cb9-48"><a href="#cb9-48" aria-hidden="true" tabindex="-1"></a>  <span class="fu">select</span>(person_id, measurement_concept_id,</span>
+<span id="cb9-49"><a href="#cb9-49" aria-hidden="true" tabindex="-1"></a>         <span class="at">value_as_number =</span> value,          <span class="co"># OMOP's numeric-value column</span></span>
+<span id="cb9-50"><a href="#cb9-50" aria-hidden="true" tabindex="-1"></a>         unit,</span>
+<span id="cb9-51"><a href="#cb9-51" aria-hidden="true" tabindex="-1"></a>         <span class="at">measurement_date =</span> date,</span>
+<span id="cb9-52"><a href="#cb9-52" aria-hidden="true" tabindex="-1"></a>         <span class="at">measurement_source_value =</span> observation)  <span class="co"># provenance: original label</span></span>
+<span id="cb9-53"><a href="#cb9-53" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-54"><a href="#cb9-54" aria-hidden="true" tabindex="-1"></a><span class="fu">cat</span>(<span class="st">"VISIT_OCCURRENCE:"</span>, <span class="fu">nrow</span>(visit_occurrence), <span class="st">"rows,"</span>, <span class="fu">ncol</span>(visit_occurrence), <span class="st">"cols"</span>,</span>
+<span id="cb9-55"><a href="#cb9-55" aria-hidden="true" tabindex="-1"></a>    <span class="st">"| CONDITION_OCCURRENCE:"</span>, <span class="fu">nrow</span>(condition_occurrence), <span class="st">"rows,"</span>, <span class="fu">ncol</span>(condition_occurrence), <span class="st">"cols"</span>,</span>
+<span id="cb9-56"><a href="#cb9-56" aria-hidden="true" tabindex="-1"></a>    <span class="st">"| MEASUREMENT:"</span>, <span class="fu">nrow</span>(measurement), <span class="st">"rows,"</span>, <span class="fu">ncol</span>(measurement), <span class="st">"cols</span><span class="sc">\n</span><span class="st">"</span>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>VISIT_OCCURRENCE: 505 rows, 4 cols | CONDITION_OCCURRENCE: 119 rows, 3 cols | MEASUREMENT: 1038 rows, 6 cols</code></pre>
+</div>
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb11"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="fu">head</span>(condition_occurrence)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="cell-output cell-output-stdout">
+<pre><code># A tibble: 6 × 3
+  person_id condition_concept_id condition_source_value
+      &lt;int&gt;                &lt;int&gt; &lt;chr&gt;                 
+1         1               317009 Asthma                
+2         4               317009 Asthma                
+3         7               317009 Asthma                
+4         7               320128 Essential hypertension
+5         8               320128 Essential hypertension
+6         9               317009 Asthma                </code></pre>
+</div>
+</div>
+<div class="cell">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb13"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="co"># MEASUREMENT was built in the previous cell with visit_occurrence and</span></span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a><span class="co"># condition_occurrence. Inspect a few rows: each lab/vital is stored as a</span></span>
+<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a><span class="co"># measurement_concept_id, not as a free-text label.</span></span>
+<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a><span class="fu">cat</span>(<span class="st">"MEASUREMENT table:"</span>, <span class="fu">nrow</span>(measurement), <span class="st">"rows,"</span>, <span class="fu">ncol</span>(measurement), <span class="st">"cols</span><span class="sc">\n</span><span class="st">"</span>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>MEASUREMENT table: 1038 rows, 6 cols</code></pre>
+</div>
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb15"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="fu">head</span>(measurement)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="cell-output cell-output-stdout">
+<pre><code># A tibble: 6 × 6
+  person_id measurement_concept_id value_as_number unit  measurement_date
+      &lt;int&gt;                  &lt;dbl&gt;           &lt;dbl&gt; &lt;chr&gt; &lt;date&gt;          
+1         1                3025315           102.  kg    2024-09-27      
+2         1                3004249           119.  mmHg  2024-09-27      
+3         1                3025315            86   kg    2024-08-15      
+4         1                3004249           142.  mmHg  2024-08-15      
+5         1                3004410             7.4 %     2024-08-15      
+6         1                3025315            98.2 kg    2025-05-04      
+# ℹ 1 more variable: measurement_source_value &lt;chr&gt;</code></pre>
+</div>
+</div>
+</section>
+</section>
+<section id="a-standardized-analytic-query" class="level2">
+<h2 class="anchored" data-anchor-id="a-standardized-analytic-query">7.4 A standardized analytic query</h2>
+<p>Now that our data has been transformed into the OMOP Common Data Model (CDM), we can take advantage of its standardized structure to perform analyses that will work at any OMOP-compliant site, without needing to adjust the code for differences in local data tables or variable naming conventions.</p>
+<p>For example, if we want to calculate the prevalence of each medical condition represented in our dataset, we can write a query using OMOP’s standard fields and concepts. Specifically, we are interested in the prevalence of each mapped condition (e.g., asthma, hypertension, diabetes). The query groups patients by their standardized OMOP concept ID for each condition, counts the number of unique persons with each condition, and then joins this with the OMOP “concept” table. The concept table provides the human-readable names corresponding to each standardized concept ID.</p>
+<p>By using standardized concept IDs rather than site-specific strings (such as “Essential hypertension” or “asthma”), our query is robust to differences in how conditions might be labeled or coded at different institutions. This ensures consistent, reproducible, and portable analyses: the code will work “as is” at any site using OMOP, and will always report well-defined concepts with their proper clinical names, regardless of the specific way the local site originally recorded them.</p>
+<div class="cell">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb17"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Because the data is now in OMOP, this query would run UNCHANGED at any OMOP site.</span></span>
+<span id="cb17-2"><a href="#cb17-2" aria-hidden="true" tabindex="-1"></a><span class="co"># We count distinct persons per condition_concept_id, then join CONCEPT to get</span></span>
+<span id="cb17-3"><a href="#cb17-3" aria-hidden="true" tabindex="-1"></a><span class="co"># human-readable names. The analysis never mentions "Essential hypertension" as</span></span>
+<span id="cb17-4"><a href="#cb17-4" aria-hidden="true" tabindex="-1"></a><span class="co"># a string — only the integer 320128 — so site-specific labels cannot break it.</span></span>
+<span id="cb17-5"><a href="#cb17-5" aria-hidden="true" tabindex="-1"></a>prevalence <span class="ot">&lt;-</span> condition_occurrence <span class="sc">%&gt;%</span></span>
+<span id="cb17-6"><a href="#cb17-6" aria-hidden="true" tabindex="-1"></a>  <span class="fu">group_by</span>(condition_concept_id) <span class="sc">%&gt;%</span></span>
+<span id="cb17-7"><a href="#cb17-7" aria-hidden="true" tabindex="-1"></a>  <span class="fu">summarise</span>(<span class="at">n_persons =</span> <span class="fu">n_distinct</span>(person_id), <span class="at">.groups =</span> <span class="st">"drop"</span>) <span class="sc">%&gt;%</span>  <span class="co"># unique patients, not rows</span></span>
+<span id="cb17-8"><a href="#cb17-8" aria-hidden="true" tabindex="-1"></a>  <span class="fu">inner_join</span>(</span>
+<span id="cb17-9"><a href="#cb17-9" aria-hidden="true" tabindex="-1"></a>    concept <span class="sc">%&gt;%</span> <span class="fu">select</span>(concept_id, concept_name),</span>
+<span id="cb17-10"><a href="#cb17-10" aria-hidden="true" tabindex="-1"></a>    <span class="at">by =</span> <span class="fu">c</span>(<span class="st">"condition_concept_id"</span> <span class="ot">=</span> <span class="st">"concept_id"</span>)</span>
+<span id="cb17-11"><a href="#cb17-11" aria-hidden="true" tabindex="-1"></a>  )</span>
+<span id="cb17-12"><a href="#cb17-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-13"><a href="#cb17-13" aria-hidden="true" tabindex="-1"></a>prevalence<span class="sc">$</span>pct <span class="ot">&lt;-</span> <span class="fu">round</span>(<span class="dv">100</span> <span class="sc">*</span> prevalence<span class="sc">$</span>n_persons <span class="sc">/</span> <span class="fu">nrow</span>(person), <span class="dv">1</span>)</span>
+<span id="cb17-14"><a href="#cb17-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-15"><a href="#cb17-15" aria-hidden="true" tabindex="-1"></a><span class="fu">cat</span>(<span class="st">"Standardized prevalence query (portable across OMOP sites):</span><span class="sc">\n</span><span class="st">"</span>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>Standardized prevalence query (portable across OMOP sites):</code></pre>
+</div>
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb19"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a><span class="fu">print</span>(<span class="fu">as.data.frame</span>(prevalence[, <span class="fu">c</span>(<span class="st">"concept_name"</span>, <span class="st">"n_persons"</span>, <span class="st">"pct"</span>)]), <span class="at">row.names =</span> <span class="cn">FALSE</span>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>             concept_name n_persons  pct
+ Type 2 diabetes mellitus        53 26.5
+                   Asthma        34 17.0
+   Essential hypertension        32 16.0</code></pre>
+</div>
+</div>
+<div class="cell">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb21"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Same idea for a lab: look up A1c by its concept_id, not by the string "Hemoglobin A1c".</span></span>
+<span id="cb21-2"><a href="#cb21-2" aria-hidden="true" tabindex="-1"></a><span class="co"># If another site stored the label as "HbA1c" or "glycohemoglobin", this still works.</span></span>
+<span id="cb21-3"><a href="#cb21-3" aria-hidden="true" tabindex="-1"></a>a1c_id <span class="ot">&lt;-</span> <span class="dv">3004410</span></span>
+<span id="cb21-4"><a href="#cb21-4" aria-hidden="true" tabindex="-1"></a>mean_a1c <span class="ot">&lt;-</span> <span class="fu">mean</span>(measurement<span class="sc">$</span>value_as_number[measurement<span class="sc">$</span>measurement_concept_id <span class="sc">==</span> a1c_id], <span class="at">na.rm =</span> <span class="cn">TRUE</span>)</span>
+<span id="cb21-5"><a href="#cb21-5" aria-hidden="true" tabindex="-1"></a>name <span class="ot">&lt;-</span> concept<span class="sc">$</span>concept_name[concept<span class="sc">$</span>concept_id <span class="sc">==</span> a1c_id][<span class="dv">1</span>]</span>
+<span id="cb21-6"><a href="#cb21-6" aria-hidden="true" tabindex="-1"></a><span class="fu">cat</span>(<span class="fu">sprintf</span>(<span class="st">"Mean %s across cohort: %.2f %%</span><span class="sc">\n</span><span class="st">"</span>, name, mean_a1c))</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>Mean Hemoglobin A1c across cohort: 7.17 %</code></pre>
+</div>
+</div>
+</section>
+<section id="other-common-data-models" class="level2">
+<h2 class="anchored" data-anchor-id="other-common-data-models">7.5 Other common data models</h2>
+<p>OMOP is dominant for observational research, but you’ll meet others:</p>
+<table class="caption-top table">
+<colgroup>
+<col style="width: 33%">
+<col style="width: 33%">
+<col style="width: 33%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>CDM</th>
+<th>Origin</th>
+<th>Typical use</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><strong>OMOP</strong></td>
+<td>OHDSI</td>
+<td>Observational research networks, large-scale analytics</td>
+</tr>
+<tr class="even">
+<td><strong>i2b2</strong></td>
+<td>Partners/Harvard</td>
+<td>Cohort discovery, local data warehouses</td>
+</tr>
+<tr class="odd">
+<td><strong>PCORnet</strong></td>
+<td>PCORI</td>
+<td>Patient-centered outcomes research</td>
+</tr>
+<tr class="even">
+<td><strong>Sentinel</strong></td>
+<td>FDA</td>
+<td>Drug/device safety surveillance</td>
+</tr>
+</tbody>
+</table>
+<p>They share the same core idea: <strong>map once, analyze everywhere</strong>.</p>
+<section id="omop-observational-medical-outcomes-partnership" class="level3">
+<h3 class="anchored" data-anchor-id="omop-observational-medical-outcomes-partnership">1. OMOP (Observational Medical Outcomes Partnership)</h3>
+<ul>
+<li><strong>Origin:</strong> Developed by OHDSI (Observational Health Data Sciences and Informatics)</li>
+<li><strong>Typical Use:</strong> Large-scale observational research and analytics; multi-site studies.</li>
+<li><strong>Core Idea:</strong> Uses a fixed schema (person, visit_occurrence, condition_occurrence, measurement, drug_exposure, etc.) and common vocabulary (concept_id).</li>
+<li><strong>R Example:</strong> Query prevalence of a condition standardized by concept_id.</li>
+</ul>
+<div class="cell">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb23"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb23-1"><a href="#cb23-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Find prevalence of 'Asthma' (concept_id = 317009) in a cohort</span></span>
+<span id="cb23-2"><a href="#cb23-2" aria-hidden="true" tabindex="-1"></a>asthma_id <span class="ot">&lt;-</span> <span class="dv">317009</span></span>
+<span id="cb23-3"><a href="#cb23-3" aria-hidden="true" tabindex="-1"></a>asthma_patients <span class="ot">&lt;-</span> <span class="fu">n_distinct</span>(condition_occurrence<span class="sc">$</span>person_id[condition_occurrence<span class="sc">$</span>condition_concept_id <span class="sc">==</span> asthma_id])</span>
+<span id="cb23-4"><a href="#cb23-4" aria-hidden="true" tabindex="-1"></a>total_patients <span class="ot">&lt;-</span> <span class="fu">n_distinct</span>(person<span class="sc">$</span>person_id)</span>
+<span id="cb23-5"><a href="#cb23-5" aria-hidden="true" tabindex="-1"></a><span class="fu">cat</span>(<span class="fu">sprintf</span>(<span class="st">"Asthma prevalence: %.1f%%</span><span class="sc">\n</span><span class="st">"</span>, <span class="dv">100</span> <span class="sc">*</span> asthma_patients <span class="sc">/</span> total_patients))</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>Asthma prevalence: 17.0%</code></pre>
+</div>
+</div>
+</section>
+<section id="i2b2-informatics-for-integrating-biology-and-the-bedside" class="level3">
+<h3 class="anchored" data-anchor-id="i2b2-informatics-for-integrating-biology-and-the-bedside">2. i2b2 (Informatics for Integrating Biology and the Bedside)</h3>
+<ul>
+<li><strong>Origin:</strong> Partners HealthCare / Harvard</li>
+<li><strong>Typical Use:</strong> Cohort discovery, local clinical data warehouse queries, self-service exploration.</li>
+<li><strong>Core Idea:</strong> Uses a flexible, hierarchical “star schema” model (fact table + ontology), allowing for fast, ad-hoc queries.</li>
+<li><strong>R Example:</strong> Pull encounter counts of patients by sub-tree (e.g., diagnoses starting with ‘E11’ for diabetes).</li>
+</ul>
+<div class="cell">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb25"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb25-1"><a href="#cb25-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Example stub: i2b2 query for all 'E11%' ICD-10 codes (Type 2 Diabetes)</span></span>
+<span id="cb25-2"><a href="#cb25-2" aria-hidden="true" tabindex="-1"></a>diagnoses <span class="ot">&lt;-</span> <span class="fu">tibble</span>(<span class="at">code =</span> <span class="fu">c</span>(<span class="st">"E11.9"</span>, <span class="st">"I10"</span>), <span class="at">person_id =</span> <span class="fu">c</span>(<span class="dv">1</span>, <span class="dv">2</span>))</span>
+<span id="cb25-3"><a href="#cb25-3" aria-hidden="true" tabindex="-1"></a>diabetes_patients <span class="ot">&lt;-</span> <span class="fu">n_distinct</span>(diagnoses<span class="sc">$</span>person_id[<span class="fu">startsWith</span>(diagnoses<span class="sc">$</span>code, <span class="st">"E11"</span>)])</span>
+<span id="cb25-4"><a href="#cb25-4" aria-hidden="true" tabindex="-1"></a><span class="fu">cat</span>(<span class="fu">sprintf</span>(<span class="st">"Type 2 diabetes patients (i2b2): %d</span><span class="sc">\n</span><span class="st">"</span>, diabetes_patients))</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>Type 2 diabetes patients (i2b2): 1</code></pre>
+</div>
+</div>
+</section>
+<section id="pcornet-patient-centered-outcomes-research-network" class="level3">
+<h3 class="anchored" data-anchor-id="pcornet-patient-centered-outcomes-research-network">3. PCORnet (Patient-Centered Outcomes Research Network)</h3>
+<ul>
+<li><strong>Origin:</strong> PCORI (Patient-Centered Outcomes Research Institute)</li>
+<li><strong>Typical Use:</strong> National-scale, multi-system patient-centered outcomes research.</li>
+<li><strong>Core Idea:</strong> Wide tables, common vocabulary mappings, supports pragmatic clinical trial and observational studies.</li>
+</ul>
+<div class="cell">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb27"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb27-1"><a href="#cb27-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Example stub: PCORnet procedure table analysis</span></span>
+<span id="cb27-2"><a href="#cb27-2" aria-hidden="true" tabindex="-1"></a>procedures <span class="ot">&lt;-</span> <span class="fu">tibble</span>(<span class="at">px_code =</span> <span class="fu">c</span>(<span class="st">"93000"</span>, <span class="st">"80050"</span>), <span class="at">person_id =</span> <span class="fu">c</span>(<span class="dv">3</span>, <span class="dv">4</span>))</span>
+<span id="cb27-3"><a href="#cb27-3" aria-hidden="true" tabindex="-1"></a>ecg_count <span class="ot">&lt;-</span> <span class="fu">n_distinct</span>(procedures<span class="sc">$</span>person_id[procedures<span class="sc">$</span>px_code <span class="sc">==</span> <span class="st">"93000"</span>])</span>
+<span id="cb27-4"><a href="#cb27-4" aria-hidden="true" tabindex="-1"></a><span class="fu">cat</span>(<span class="fu">sprintf</span>(<span class="st">"Patients with ECG procedure (PCORnet): %d</span><span class="sc">\n</span><span class="st">"</span>, ecg_count))</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>Patients with ECG procedure (PCORnet): 1</code></pre>
+</div>
+</div>
+</section>
+<section id="sentinel" class="level3">
+<h3 class="anchored" data-anchor-id="sentinel">4. Sentinel</h3>
+<ul>
+<li><strong>Origin:</strong> FDA</li>
+<li><strong>Typical Use:</strong> Drug and device safety surveillance, regulatory queries.</li>
+<li><strong>Core Idea:</strong> Designed for regulatory queries at scale, federated querying across data partners, focused tables (dispensing, enrollment, etc.).</li>
+</ul>
+<div class="cell">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb29"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb29-1"><a href="#cb29-1" aria-hidden="true" tabindex="-1"></a>dispensing <span class="ot">&lt;-</span> <span class="fu">tibble</span>(<span class="at">ndc =</span> <span class="fu">c</span>(<span class="st">"00093754456"</span>, <span class="st">"00591088810"</span>), <span class="at">person_id =</span> <span class="fu">c</span>(<span class="dv">5</span>, <span class="dv">6</span>))</span>
+<span id="cb29-2"><a href="#cb29-2" aria-hidden="true" tabindex="-1"></a>drug_count <span class="ot">&lt;-</span> <span class="fu">n_distinct</span>(dispensing<span class="sc">$</span>person_id[dispensing<span class="sc">$</span>ndc <span class="sc">==</span> <span class="st">"00093754456"</span>])</span>
+<span id="cb29-3"><a href="#cb29-3" aria-hidden="true" tabindex="-1"></a><span class="fu">cat</span>(<span class="fu">sprintf</span>(<span class="st">"Patients dispensed statins (Sentinel): %d</span><span class="sc">\n</span><span class="st">"</span>, drug_count))</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>Patients dispensed statins (Sentinel): 1</code></pre>
+</div>
+</div>
+</section>
+</section>
+<section id="exercises" class="level2">
+<h2 class="anchored" data-anchor-id="exercises">Exercises</h2>
+<ol type="1">
+<li>Add <strong>Asthma</strong> patients to the prevalence query and confirm the concept join still resolves names correctly.</li>
+<li>Build a <code>drug_exposure</code> table by mapping the medications to the two drug concepts in the vocabulary, and count exposures per drug.</li>
+<li>Report how many condition rows were <strong>unmapped</strong> (fell out because the source label had no standard concept) — a key metric of mapping completeness.</li>
+</ol>
+</section>
+<section id="key-takeaways" class="level2">
+<h2 class="anchored" data-anchor-id="key-takeaways">Key takeaways</h2>
+<ul>
+<li>A CDM turns <strong>N bespoke extractions into one mapping + one analysis</strong>.</li>
+<li>OMOP’s core is the <strong>standardized vocabulary</strong> (<code>concept_id</code>) plus a fixed schema (<code>person</code>, <code>visit_occurrence</code>, <code>condition_occurrence</code>, <code>measurement</code>, <code>drug_exposure</code>).</li>
+<li><strong>Provenance</strong> (<code>*_source_value</code>) is preserved so mappings stay auditable.</li>
+</ul>
+<hr>
+<p><em>Next: Module 8 - Data Quality and Validation.</em></p>
+
+
+</section>
+
+</main> <!-- /main -->
+<script id="quarto-html-after-body" type="application/javascript">
+  window.document.addEventListener("DOMContentLoaded", function (event) {
+    const icon = "";
+    const anchorJS = new window.AnchorJS();
+    anchorJS.options = {
+      placement: 'right',
+      icon: icon
+    };
+    anchorJS.add('.anchored');
+    const isCodeAnnotation = (el) => {
+      for (const clz of el.classList) {
+        if (clz.startsWith('code-annotation-')) {                     
+          return true;
+        }
+      }
+      return false;
+    }
+    const onCopySuccess = function(e) {
+      // button target
+      const button = e.trigger;
+      // don't keep focus
+      button.blur();
+      // flash "checked"
+      button.classList.add('code-copy-button-checked');
+      var currentTitle = button.getAttribute("title");
+      button.setAttribute("title", "Copied!");
+      let tooltip;
+      if (window.bootstrap) {
+        button.setAttribute("data-bs-toggle", "tooltip");
+        button.setAttribute("data-bs-placement", "left");
+        button.setAttribute("data-bs-title", "Copied!");
+        tooltip = new bootstrap.Tooltip(button, 
+          { trigger: "manual", 
+            customClass: "code-copy-button-tooltip",
+            offset: [0, -8]});
+        tooltip.show();    
+      }
+      setTimeout(function() {
+        if (tooltip) {
+          tooltip.hide();
+          button.removeAttribute("data-bs-title");
+          button.removeAttribute("data-bs-toggle");
+          button.removeAttribute("data-bs-placement");
+        }
+        button.setAttribute("title", currentTitle);
+        button.classList.remove('code-copy-button-checked');
+      }, 1000);
+      // clear code selection
+      e.clearSelection();
+    }
+    const getTextToCopy = function(trigger) {
+      const outerScaffold = trigger.parentElement.cloneNode(true);
+      const codeEl = outerScaffold.querySelector('code');
+      for (const childEl of codeEl.children) {
+        if (isCodeAnnotation(childEl)) {
+          childEl.remove();
+        }
+      }
+      return codeEl.innerText;
+    }
+    const clipboard = new window.ClipboardJS('.code-copy-button:not([data-in-quarto-modal])', {
+      text: getTextToCopy
+    });
+    clipboard.on('success', onCopySuccess);
+    if (window.document.getElementById('quarto-embedded-source-code-modal')) {
+      const clipboardModal = new window.ClipboardJS('.code-copy-button[data-in-quarto-modal]', {
+        text: getTextToCopy,
+        container: window.document.getElementById('quarto-embedded-source-code-modal')
+      });
+      clipboardModal.on('success', onCopySuccess);
+    }
+      var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);
+      var mailtoRegex = new RegExp(/^mailto:/);
+        var filterRegex = new RegExp("https:\/\/zia207\.github\.io\/Health-informatics\/Health-Informatics-R\/");
+      var isInternal = (href) => {
+          return filterRegex.test(href) || localhostRegex.test(href) || mailtoRegex.test(href);
+      }
+      // Inspect non-navigation links and adorn them if external
+     var links = window.document.querySelectorAll('a[href]:not(.nav-link):not(.navbar-brand):not(.toc-action):not(.sidebar-link):not(.sidebar-item-toggle):not(.pagination-link):not(.no-external):not([aria-hidden]):not(.dropdown-item):not(.quarto-navigation-tool):not(.about-link)');
+      for (var i=0; i<links.length; i++) {
+        const link = links[i];
+        if (!isInternal(link.href)) {
+          // undo the damage that might have been done by quarto-nav.js in the case of
+          // links that we want to consider external
+          if (link.dataset.originalHref !== undefined) {
+            link.href = link.dataset.originalHref;
+          }
+        }
+      }
+    function tippyHover(el, contentFn, onTriggerFn, onUntriggerFn) {
+      const config = {
+        allowHTML: true,
+        maxWidth: 500,
+        delay: 100,
+        arrow: false,
+        appendTo: function(el) {
+            return el.parentElement;
+        },
+        interactive: true,
+        interactiveBorder: 10,
+        theme: 'quarto',
+        placement: 'bottom-start',
+      };
+      if (contentFn) {
+        config.content = contentFn;
+      }
+      if (onTriggerFn) {
+        config.onTrigger = onTriggerFn;
+      }
+      if (onUntriggerFn) {
+        config.onUntrigger = onUntriggerFn;
+      }
+      window.tippy(el, config); 
+    }
+    const noterefs = window.document.querySelectorAll('a[role="doc-noteref"]');
+    for (var i=0; i<noterefs.length; i++) {
+      const ref = noterefs[i];
+      tippyHover(ref, function() {
+        // use id or data attribute instead here
+        let href = ref.getAttribute('data-footnote-href') || ref.getAttribute('href');
+        try { href = new URL(href).hash; } catch {}
+        const id = href.replace(/^#\/?/, "");
+        const note = window.document.getElementById(id);
+        if (note) {
+          return note.innerHTML;
+        } else {
+          return "";
+        }
+      });
+    }
+    const xrefs = window.document.querySelectorAll('a.quarto-xref');
+    const processXRef = (id, note) => {
+      // Strip column container classes
+      const stripColumnClz = (el) => {
+        el.classList.remove("page-full", "page-columns");
+        if (el.children) {
+          for (const child of el.children) {
+            stripColumnClz(child);
+          }
+        }
+      }
+      stripColumnClz(note)
+      if (id === null || id.startsWith('sec-')) {
+        // Special case sections, only their first couple elements
+        const container = document.createElement("div");
+        if (note.children && note.children.length > 2) {
+          container.appendChild(note.children[0].cloneNode(true));
+          for (let i = 1; i < note.children.length; i++) {
+            const child = note.children[i];
+            if (child.tagName === "P" && child.innerText === "") {
+              continue;
+            } else {
+              container.appendChild(child.cloneNode(true));
+              break;
+            }
+          }
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(container);
+          }
+          return container.innerHTML
+        } else {
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(note);
+          }
+          return note.innerHTML;
+        }
+      } else {
+        // Remove any anchor links if they are present
+        const anchorLink = note.querySelector('a.anchorjs-link');
+        if (anchorLink) {
+          anchorLink.remove();
+        }
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(note);
+        }
+        if (note.classList.contains("callout")) {
+          return note.outerHTML;
+        } else {
+          return note.innerHTML;
+        }
+      }
+    }
+    for (var i=0; i<xrefs.length; i++) {
+      const xref = xrefs[i];
+      tippyHover(xref, undefined, function(instance) {
+        instance.disable();
+        let url = xref.getAttribute('href');
+        let hash = undefined; 
+        if (url.startsWith('#')) {
+          hash = url;
+        } else {
+          try { hash = new URL(url).hash; } catch {}
+        }
+        if (hash) {
+          const id = hash.replace(/^#\/?/, "");
+          const note = window.document.getElementById(id);
+          if (note !== null) {
+            try {
+              const html = processXRef(id, note.cloneNode(true));
+              instance.setContent(html);
+            } finally {
+              instance.enable();
+              instance.show();
+            }
+          } else {
+            // See if we can fetch this
+            fetch(url.split('#')[0])
+            .then(res => res.text())
+            .then(html => {
+              const parser = new DOMParser();
+              const htmlDoc = parser.parseFromString(html, "text/html");
+              const note = htmlDoc.getElementById(id);
+              if (note !== null) {
+                const html = processXRef(id, note);
+                instance.setContent(html);
+              } 
+            }).finally(() => {
+              instance.enable();
+              instance.show();
+            });
+          }
+        } else {
+          // See if we can fetch a full url (with no hash to target)
+          // This is a special case and we should probably do some content thinning / targeting
+          fetch(url)
+          .then(res => res.text())
+          .then(html => {
+            const parser = new DOMParser();
+            const htmlDoc = parser.parseFromString(html, "text/html");
+            const note = htmlDoc.querySelector('main.content');
+            if (note !== null) {
+              // This should only happen for chapter cross references
+              // (since there is no id in the URL)
+              // remove the first header
+              if (note.children.length > 0 && note.children[0].tagName === "HEADER") {
+                note.children[0].remove();
+              }
+              const html = processXRef(null, note);
+              instance.setContent(html);
+            } 
+          }).finally(() => {
+            instance.enable();
+            instance.show();
+          });
+        }
+      }, function(instance) {
+      });
+    }
+        let selectedAnnoteEl;
+        const selectorForAnnotation = ( cell, annotation) => {
+          let cellAttr = 'data-code-cell="' + cell + '"';
+          let lineAttr = 'data-code-annotation="' +  annotation + '"';
+          const selector = 'span[' + cellAttr + '][' + lineAttr + ']';
+          return selector;
+        }
+        const selectCodeLines = (annoteEl) => {
+          const doc = window.document;
+          const targetCell = annoteEl.getAttribute("data-target-cell");
+          const targetAnnotation = annoteEl.getAttribute("data-target-annotation");
+          const annoteSpan = window.document.querySelector(selectorForAnnotation(targetCell, targetAnnotation));
+          const lines = annoteSpan.getAttribute("data-code-lines").split(",");
+          const lineIds = lines.map((line) => {
+            return targetCell + "-" + line;
+          })
+          let top = null;
+          let height = null;
+          let parent = null;
+          if (lineIds.length > 0) {
+              //compute the position of the single el (top and bottom and make a div)
+              const el = window.document.getElementById(lineIds[0]);
+              top = el.offsetTop;
+              height = el.offsetHeight;
+              parent = el.parentElement.parentElement;
+            if (lineIds.length > 1) {
+              const lastEl = window.document.getElementById(lineIds[lineIds.length - 1]);
+              const bottom = lastEl.offsetTop + lastEl.offsetHeight;
+              height = bottom - top;
+            }
+            if (top !== null && height !== null && parent !== null) {
+              // cook up a div (if necessary) and position it 
+              let div = window.document.getElementById("code-annotation-line-highlight");
+              if (div === null) {
+                div = window.document.createElement("div");
+                div.setAttribute("id", "code-annotation-line-highlight");
+                div.style.position = 'absolute';
+                parent.appendChild(div);
+              }
+              div.style.top = top - 2 + "px";
+              div.style.height = height + 4 + "px";
+              div.style.left = 0;
+              let gutterDiv = window.document.getElementById("code-annotation-line-highlight-gutter");
+              if (gutterDiv === null) {
+                gutterDiv = window.document.createElement("div");
+                gutterDiv.setAttribute("id", "code-annotation-line-highlight-gutter");
+                gutterDiv.style.position = 'absolute';
+                const codeCell = window.document.getElementById(targetCell);
+                const gutter = codeCell.querySelector('.code-annotation-gutter');
+                gutter.appendChild(gutterDiv);
+              }
+              gutterDiv.style.top = top - 2 + "px";
+              gutterDiv.style.height = height + 4 + "px";
+            }
+            selectedAnnoteEl = annoteEl;
+          }
+        };
+        const unselectCodeLines = () => {
+          const elementsIds = ["code-annotation-line-highlight", "code-annotation-line-highlight-gutter"];
+          elementsIds.forEach((elId) => {
+            const div = window.document.getElementById(elId);
+            if (div) {
+              div.remove();
+            }
+          });
+          selectedAnnoteEl = undefined;
+        };
+          // Handle positioning of the toggle
+      window.addEventListener(
+        "resize",
+        throttle(() => {
+          elRect = undefined;
+          if (selectedAnnoteEl) {
+            selectCodeLines(selectedAnnoteEl);
+          }
+        }, 10)
+      );
+      function throttle(fn, ms) {
+      let throttle = false;
+      let timer;
+        return (...args) => {
+          if(!throttle) { // first call gets through
+              fn.apply(this, args);
+              throttle = true;
+          } else { // all the others get throttled
+              if(timer) clearTimeout(timer); // cancel #2
+              timer = setTimeout(() => {
+                fn.apply(this, args);
+                timer = throttle = false;
+              }, ms);
+          }
+        };
+      }
+        // Attach click handler to the DT
+        const annoteDls = window.document.querySelectorAll('dt[data-target-cell]');
+        for (const annoteDlNode of annoteDls) {
+          annoteDlNode.addEventListener('click', (event) => {
+            const clickedEl = event.target;
+            if (clickedEl !== selectedAnnoteEl) {
+              unselectCodeLines();
+              const activeEl = window.document.querySelector('dt[data-target-cell].code-annotation-active');
+              if (activeEl) {
+                activeEl.classList.remove('code-annotation-active');
+              }
+              selectCodeLines(clickedEl);
+              clickedEl.classList.add('code-annotation-active');
+            } else {
+              // Unselect the line
+              unselectCodeLines();
+              clickedEl.classList.remove('code-annotation-active');
+            }
+          });
+        }
+    const findCites = (el) => {
+      const parentEl = el.parentElement;
+      if (parentEl) {
+        const cites = parentEl.dataset.cites;
+        if (cites) {
+          return {
+            el,
+            cites: cites.split(' ')
+          };
+        } else {
+          return findCites(el.parentElement)
+        }
+      } else {
+        return undefined;
+      }
+    };
+    var bibliorefs = window.document.querySelectorAll('a[role="doc-biblioref"]');
+    for (var i=0; i<bibliorefs.length; i++) {
+      const ref = bibliorefs[i];
+      const citeInfo = findCites(ref);
+      if (citeInfo) {
+        tippyHover(citeInfo.el, function() {
+          var popup = window.document.createElement('div');
+          citeInfo.cites.forEach(function(cite) {
+            var citeDiv = window.document.createElement('div');
+            citeDiv.classList.add('hanging-indent');
+            citeDiv.classList.add('csl-entry');
+            var biblioDiv = window.document.getElementById('ref-' + cite);
+            if (biblioDiv) {
+              citeDiv.innerHTML = biblioDiv.innerHTML;
+            }
+            popup.appendChild(citeDiv);
+          });
+          return popup.innerHTML;
+        });
+      }
+    }
+  });
+  </script>
+<nav class="page-navigation">
+  <div class="nav-page nav-page-previous">
+      <a href="../../Notebooks/Part II -  Interoperability and Data Engineering (Intermediate)/06_data_ingestion_etl.html" class="pagination-link" aria-label="06 · Data Ingestion and ETL">
+        <i class="bi bi-arrow-left-short"></i> <span class="nav-page-text">06 · Data Ingestion and ETL</span>
+      </a>          
+  </div>
+  <div class="nav-page nav-page-next">
+      <a href="../../Notebooks/Part II -  Interoperability and Data Engineering (Intermediate)/08_data_quality_and_validation.html" class="pagination-link" aria-label="08 · Data Quality and Validation">
+        <span class="nav-page-text">08 · Data Quality and Validation</span> <i class="bi bi-arrow-right-short"></i>
+      </a>
+  </div>
+</nav>
+</div> <!-- /content -->
+<footer class="footer">
+  <div class="nav-footer">
+    <div class="nav-footer-left">
+<p>© CC-By Zia Ahmed, Upatta Analytics, 2026</p>
+</div>   
+    <div class="nav-footer-center">
+      &nbsp;
+    <div class="toc-actions d-sm-block d-md-none"><ul><li><a href="https://github.com/zia207/Health-informatics/edit/main/Notebooks/Part II -  Interoperability and Data Engineering (Intermediate)/07_omop_common_data_model.qmd" class="toc-action"><i class="bi bi-github"></i>Edit this page</a></li><li><a href="https://github.com/zia207/Health-informatics/issues/new" class="toc-action"><i class="bi empty"></i>Report an issue</a></li></ul></div></div>
+    <div class="nav-footer-right">
+<p>Built with <a href="https://quarto.org/">Quarto</a></p>
+</div>
+  </div>
+</footer>
+
+
+
+
+<script src="../../site_libs/quarto-html/zenscroll-min.js"></script>
+</body></html>

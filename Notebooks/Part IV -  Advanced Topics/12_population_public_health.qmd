@@ -1,0 +1,380 @@
+---
+title: "Module 12:  Public Health and Population Informatics"
+---
+
+![](../../Image/chapter-banner.png)
+
+**Health Informatics in R** · Part IV: Advanced Topics · Module 12 of 16
+
+---
+
+Clinical informatics focuses on the individual patient; **public health
+informatics** shifts the unit of analysis to the **population**. This module covers
+disease surveillance, reportable conditions, syndromic monitoring, registries, and
+the standards that move data from clinics to health departments.
+
+## Learning objectives
+
+By the end of this module you will be able to:
+
+1. Explain **disease surveillance** and the difference between **case-based** and
+   **syndromic** surveillance.
+2. Implement a **reportable-condition** trigger from clinical data.
+3. Build a **syndromic time series** and detect an **aberration** (outbreak signal).
+4. Construct a simple **disease registry** and compute population indicators.
+5. Name the public-health reporting standards: **eCR** and **ELR**.
+
+## Dataset
+
+The synthetic EHR aggregated to the **population** level, plus a **daily syndromic
+time series** we derive from encounters and into which we inject a synthetic
+outbreak so the aberration detector has something to find.
+
+```{r}
+#| label: setup
+library(dplyr)
+library(tibble)
+library(ggplot2)
+
+# --- Self-contained synthetic EHR generator (identical to earlier parts) ---
+
+# This function creates a synthetic Electronic Health Record (EHR) dataset with multiple tables.
+make_synthetic_ehr <- function(n_patients = 200, seed = 42) {
+  set.seed(seed)
+
+  # 1. Generate basic patient demographics
+  first <- c("Ava","Liam","Noah","Mia","Zoe","Omar","Ivan","Sara","Leo","Nina",
+             "Ruth","Kai","Yara","Theo","Ida","Sam","Ana","Eli","Rex","Uma")
+  last  <- c("Khan","Ortiz","Chen","Diaz","Patel","Ali","Brown","Nash","Reed","Vega",
+             "Cole","Frost","Grant","Hale","Iqbal","Jain","Kerr","Lund","Mora","Park")
+  ages <- sample(18:89, n_patients, replace = TRUE)
+  patients <- tibble(
+    patient_id = sprintf("P%d", 1000 + 0:(n_patients - 1)),
+    given_name = sample(first, n_patients, replace = TRUE),
+    family_name = sample(last, n_patients, replace = TRUE),
+    sex = sample(c("male", "female"), n_patients, replace = TRUE, prob = c(0.49, 0.51)),
+    age = ages,
+    birth_year = 2026 - ages
+  )
+
+  # 2. Simulate encounters for each patient (each patient has 1-4 encounters)
+  enc_types <- c("ambulatory", "emergency", "inpatient", "wellness")
+  enc_rows <- vector("list", n_patients)
+  eid <- 0
+  for (i in seq_len(n_patients)) {
+    pid <- patients$patient_id[i]
+    n_enc <- sample(1:4, 1)
+    day <- sample(0:(365 * 3 - 1), n_enc, replace = TRUE)  # encounter at random day over 3 years
+    ids <- sprintf("E%05d", eid + seq_len(n_enc))
+    eid <- eid + n_enc
+    enc_rows[[i]] <- tibble(
+      encounter_id = ids,
+      patient_id = pid,
+      encounter_type = sample(enc_types, n_enc, replace = TRUE, prob = c(0.55, 0.15, 0.10, 0.20)),
+      date = as.Date("2023-01-01") + day
+    )
+  }
+  encounters <- bind_rows(enc_rows)
+
+  # 3. Generate observations for each encounter (70% chance per observation type per encounter)
+  obs_defs <- tribble(
+    ~observation,               ~unit,   ~lo,  ~hi,
+    "Body height",               "cm",    150,  195,
+    "Body weight",                "kg",    50,   110,
+    "Systolic blood pressure",   "mmHg",  100,  165,
+    "Heart rate",                 "/min",  55,   100,
+    "Hemoglobin A1c",             "%",     4.8,  9.5
+  )
+  obs_rows <- vector("list", nrow(encounters))
+  for (i in seq_len(nrow(encounters))) {
+    e <- encounters[i, ]
+    keep <- runif(nrow(obs_defs)) < 0.7  # 70% probability to record the observation
+    if (any(keep)) {
+      d <- obs_defs[keep, ]
+      obs_rows[[i]] <- tibble(
+        encounter_id = e$encounter_id,
+        patient_id = e$patient_id,
+        observation = d$observation,
+        value = round(runif(nrow(d), d$lo, d$hi), 1),
+        unit = d$unit,
+        date = e$date
+      )
+    }
+  }
+  observations <- bind_rows(obs_rows) %>%
+    mutate(observation_id = sprintf("O%06d", row_number())) %>%
+    relocate(observation_id)
+
+  # 4. Assign 0-3 random conditions per patient from a predefined pool
+  cond_pool <- c("Essential hypertension", "Type 2 diabetes mellitus", "Asthma",
+                 "Acute bronchitis", "Major depressive disorder", "Osteoarthritis",
+                 "Chronic kidney disease", "Anemia")
+  cond_rows <- vector("list", n_patients)
+  for (i in seq_len(n_patients)) {
+    pid <- patients$patient_id[i]
+    n_c <- sample(0:3, 1)
+    if (n_c > 0) {
+      cond_rows[[i]] <- tibble(patient_id = pid, condition = sample(cond_pool, n_c, replace = FALSE))
+    }
+  }
+  conditions <- bind_rows(cond_rows) %>%
+    mutate(condition_id = sprintf("C%05d", row_number())) %>%
+    relocate(condition_id)
+
+  # 5. Assign 0-3 random medications per patient from a medication pool
+  med_pool <- c("Lisinopril", "Metformin", "Albuterol", "Atorvastatin", "Sertraline",
+                "Amoxicillin", "Ibuprofen", "Hydrochlorothiazide")
+  med_rows <- vector("list", n_patients)
+  for (i in seq_len(n_patients)) {
+    pid <- patients$patient_id[i]
+    n_m <- sample(0:3, 1)
+    if (n_m > 0) {
+      med_rows[[i]] <- tibble(patient_id = pid, medication = sample(med_pool, n_m, replace = FALSE))
+    }
+  }
+  medications <- bind_rows(med_rows) %>%
+    mutate(medication_id = sprintf("M%05d", row_number())) %>%
+    relocate(medication_id)
+
+  # Return the complete synthetic EHR as a list of tables
+  list(
+    patients = patients,
+    encounters = encounters,
+    observations = observations,
+    conditions = conditions,
+    medications = medications
+  )
+}
+
+# Actually generate the data and display a summary of each table's size
+ehr <- make_synthetic_ehr()
+cat("Tables:", paste(sprintf("%s (%d)", names(ehr), sapply(ehr, nrow)), collapse = ", "), "\n")
+```
+
+## 12.1 Two modes of surveillance
+
+**Case-based (notifiable disease) surveillance** involves the mandatory reporting of specific, confirmed diagnoses, such as measles or tuberculosis, to public health authorities. Each case is investigated and reported individually, which ensures very high specificity and data accuracy. However, because reporting relies on confirmation (often lab-based) and follow-up, this approach is slower and less useful for providing early warning of emerging health threats.
+
+**Syndromic surveillance** monitors patterns of health-related data before a definitive diagnosis is made. It tracks symptoms, chief complaints, or visit counts in sources like emergency departments to rapidly detect unusual trends (such as an uptick in respiratory symptoms). This method is much faster, enabling early detection and potentially timely interventions, but it is less specific: many different diseases or non-infectious conditions can cause similar symptom patterns, making the data "noisy" and prone to false alarms.
+
+In practice, public health systems use both approaches: syndromic surveillance provides rapid alerts for unexpected activity, allowing early situational awareness, while case-based reporting follows as a more definitive, confirmatory process that guides official response and containment.
+
+## 12.2 Reportable-condition triggers
+
+Certain diagnoses, such as specific infectious diseases or conditions with significant public health impact, are **legally reportable** to government authorities. This means that, when a healthcare provider or EHR system records the diagnosis of such a condition, an automated process (called a "trigger") identifies the case and prepares the relevant clinical information for prompt, secure transmission. This process is known as **electronic case reporting (eCR)**. eCR enables rapid, standardized, and reliable notification to public health agencies—ensuring they are alerted about new cases quickly enough to investigate, monitor trends, and initiate appropriate disease control or preventive actions.
+
+```{r}
+# Define two lists mimicking reportable conditions and those that are actually notifiable (require action).
+# In reality, these lists are determined by state or national public health laws and may be much longer.
+REPORTABLE <- list(
+  "Acute bronchitis" = "respiratory-syndrome-monitored",  # Imagine this code means the condition is tracked for public health
+  "Asthma" = "chronic-not-reportable"                     # While asthma is relevant, it's not mandated for reporting here
+)
+NOTIFIABLE <- c("Acute bronchitis")  # Of the reportable list, this condition is to be automatically flagged for action
+
+# Extract the 'conditions' table from our synthetic electronic health record (EHR)
+cond <- ehr$conditions
+
+# Find all rows where the patient's condition matches a 'notifiable' condition, i.e., should be reported
+triggered <- cond %>% filter(condition %in% NOTIFIABLE)
+
+# Annotate these flagged rows with a new column: the type of report they trigger (here, an "electronic case report" or eCR)
+triggered <- triggered %>% mutate(report_type = "eCR (electronic case report)")
+
+# Print how many cases were triggered for reporting
+cat(sprintf("Reportable cases triggered: %d\n", nrow(triggered)))
+
+# Display a few columns (patient id, condition, report type) of the first triggered cases, without row index numbers
+print(as.data.frame(head(triggered %>% select(patient_id, condition, report_type))), row.names = FALSE)
+```
+
+## 12.3 Building a syndromic time series
+
+Syndromic surveillance is concerned with monitoring trends by tracking **how counts of specific health events change over time**.
+In this example, we construct a time series by tallying the number of respiratory-related emergency encounters for each day.
+To demonstrate how syndromic surveillance detects unusual activity, we artificially add (or "inject") a surge of cases—a **synthetic outbreak**—in the middle of the series.
+This creates an abnormal spike in counts, mimicking the kind of sudden event that surveillance systems are designed to identify as a potential public health concern.
+
+```{r}
+# Make a copy of the encounters table and ensure the 'date' column is in Date format
+enc <- ehr$encounters
+enc$date <- as.Date(enc$date)
+
+# Calculate the number of emergency encounters per day:
+# 1. Filter to only emergency encounters
+# 2. Group by date, count occurrences, and name the result 'count'
+daily_counts <- enc %>%
+  filter(encounter_type == "emergency") %>%
+  count(date, name = "count")
+
+# Create a complete date range from the earliest to latest encounter date, one entry per day
+idx <- seq(min(enc$date), max(enc$date), by = "day")
+# Reindex the series to this full date range, filling days with no events with zero
+daily <- tibble(date = idx) %>%
+  left_join(daily_counts, by = "date") %>%
+  mutate(count = ifelse(is.na(count), 0, count))
+
+# Simulate a 10-day outbreak in the middle of the time series by adding elevated counts for those days
+set.seed(7)  # Fixed seed for reproducibility
+outbreak_start <- daily$date[floor(nrow(daily) / 2) + 1]  # Middle date of the series
+outbreak_days <- seq(outbreak_start, by = "day", length.out = 10)
+bump <- sample(4:8, 10, replace = TRUE)  # Add 4-8 events per outbreak day
+daily$count[daily$date %in% outbreak_days] <- daily$count[daily$date %in% outbreak_days] + bump
+
+# Output summary stats
+cat("Daily syndromic series built:", nrow(daily), "days\n")
+# Baseline mean is calculated as the average count in the first quarter of the series
+cat("Baseline mean:", round(mean(daily$count[1:floor(nrow(daily) / 4)]), 2), "\n")
+```
+
+### Milestone 1 - aberration detection (a simple EARS-style C1)
+
+Aberration detection involves identifying days where the number of observed events is unexpectedly high compared to recent history.
+
+In this example, we use a simple version of the CDC EARS (Early Aberration Reporting System) method, specifically the C1 algorithm:
+- For each day, we calculate the mean and standard deviation of event counts over a trailing baseline window (e.g., the previous 14 days, not including the current day).
+- We set a threshold as: mean + k × standard deviation (where k is typically 3).
+- Any day where the observed count exceeds this threshold is flagged as a possible aberration ("alarm").
+
+This technique allows us to automatically detect sudden, unusual increases in health events, such as might occur in a disease outbreak.
+
+```{r}
+# Function to detect statistical aberrations in a time series using a simplified CDC EARS C1 algorithm.
+# This identifies days where the number of observed events ("count") is unexpectedly high
+# compared to the preceding days, indicating a possible outbreak.
+
+detect_aberrations <- function(dates, counts, window = 14, k = 3) {
+  n <- length(counts)
+  roll_mean <- rep(NA_real_, n)
+  roll_sd <- rep(NA_real_, n)
+
+  # Rolling mean/sd over a trailing window (excluding the current day, i.e. shift(1))
+  for (i in seq_len(n)) {
+    lo <- max(1, i - window)
+    hi <- i - 1
+    if (hi >= lo && (hi - lo + 1) >= 7) {  # min_periods = 7
+      w <- counts[lo:hi]
+      roll_mean[i] <- mean(w)
+      roll_sd[i] <- sd(w)
+    }
+  }
+  roll_sd[is.na(roll_sd)] <- 1  # Use 1 as default std if insufficient prior data
+
+  # The threshold for flagging a potential aberration: mean + k*std
+  threshold <- roll_mean + k * roll_sd
+
+  # Alarm (TRUE/FALSE): did today's count exceed the calculated threshold?
+  flags <- counts > threshold
+  flags[is.na(flags)] <- FALSE
+
+  # Return a tibble showing the day's count, calculated threshold, and alarm status
+  tibble(date = dates, count = counts, threshold = round(threshold, 1), alarm = flags)
+}
+
+# Apply aberration detection to the daily time series
+signal <- detect_aberrations(daily$date, daily$count)
+
+# Extract the days that triggered alarms (potential outbreaks)
+alarms <- signal %>% filter(alarm)
+
+cat(sprintf("Aberration days flagged: %d\n", nrow(alarms)))
+# Display first 8 alarms with their observed count and calculated threshold
+print(as.data.frame(head(alarms[, c("date", "count", "threshold")], 8)), row.names = FALSE)
+```
+
+```{r}
+#| label: fig-syndromic-surveillance
+#| fig-width: 9
+#| fig-height: 3.6
+# Plot the time series with detected aberrations and thresholds for visual inspection.
+
+# Plot daily emergency department (ED) counts, alarm threshold, and flagged aberrations.
+ggplot(signal, aes(x = date)) +
+  geom_line(aes(y = count, color = "daily ED count"), linewidth = 0.7) +
+  geom_line(aes(y = threshold, color = "alarm threshold"), linetype = "dashed", linewidth = 0.7) +
+  geom_point(data = alarms, aes(y = count, color = "aberration"), size = 2, zorder = 5) +
+  scale_color_manual(
+    name = NULL,
+    values = c("daily ED count" = "#4C72B0", "alarm threshold" = "#DD8452", "aberration" = "#C44E52")
+  ) +
+  labs(title = "Syndromic surveillance: outbreak detection", x = NULL, y = "emergency encounters") +
+  theme_minimal(base_size = 11) +
+  theme(legend.position = "bottom")
+```
+
+## 12.4 Disease registries
+
+A **registry** is an organized database that contains a systematically assembled group of individuals who share a specific condition or set of characteristics. These registries are actively maintained and track individuals over time for purposes such as public health surveillance, monitoring care quality, research, and improving clinical outcomes.
+
+Examples include cancer registries, which record cancer diagnoses and follow up with patients over years, or diabetes registries, where people diagnosed with diabetes are monitored for changes in health status, treatment outcomes, and population-level trends.
+
+Disease registries collect key data points including diagnoses, laboratory results, demographics, treatments, and outcomes, making it possible to calculate statistics (indicators) such as incidence and prevalence rates, mortality, and measures of disease control.
+
+In the code below, we create a diabetes registry by identifying patients with Type 2 diabetes mellitus (T2DM) either by having a coded diagnosis or an elevated Hemoglobin A1c (A1c ≥ 6.5), and then compute population health indicators based on this curated group.
+
+```{r}
+# --- Create a diabetes registry: patients with either a T2DM diagnosis OR elevated A1c (>= 6.5) ---
+
+# 1. Gather all lab observations.
+obs <- ehr$observations
+
+# 2. Identify patients with a diagnosis code for Type 2 diabetes mellitus (T2DM).
+dx_dm <- unique(cond$patient_id[cond$condition == "Type 2 diabetes mellitus"])
+
+# 3. For each patient, get their highest Hemoglobin A1c lab value.
+a1c <- obs %>%
+  filter(observation == "Hemoglobin A1c") %>%
+  group_by(patient_id) %>%
+  summarize(value = max(value), .groups = "drop")
+
+# 4. Identify patients who have ever had an A1c indicating diabetes (A1c >= 6.5).
+lab_dm <- a1c$patient_id[a1c$value >= 6.5]
+
+# 5. Combine patients identified by diagnosis or by lab result to form the registry.
+registry_ids <- union(dx_dm, lab_dm)
+
+# 6. Extract patient records for those in the registry.
+registry <- ehr$patients %>% filter(patient_id %in% registry_ids)
+
+# 7. Merge each registry patient with their highest recorded A1c value (if any).
+registry <- registry %>% left_join(a1c %>% rename(max_a1c = value), by = "patient_id")
+
+# 8. Compute population metrics and output summary:
+n_total <- nrow(ehr$patients)
+cat(sprintf("Diabetes registry: %d patients (%.1f%% of population)\n",
+            nrow(registry), 100 * nrow(registry) / n_total))
+cat(sprintf("  identified by diagnosis: %d | by A1c lab: %d\n", length(dx_dm), length(lab_dm)))
+cat(sprintf("  mean age: %.1f\n", mean(registry$age)))
+poor_control <- !is.na(registry$max_a1c) & registry$max_a1c >= 8
+cat(sprintf("  %% with poor control (A1c>=8): %.1f%%\n", 100 * mean(poor_control)))
+```
+
+## 12.5 Public-health reporting standards
+
+In public health, two main automated standards ensure that important clinical and laboratory data from clinics and hospitals are sent quickly and reliably to health departments:
+
+- **eCR (electronic Case Reporting)** — This system automatically sends reports about specific health conditions (called "reportable conditions," like tuberculosis or HIV) from the electronic health record (EHR) system to public health departments. The trigger can be a diagnosis, lab result, or other EHR event. Information is sent using standardized clinical document formats such as FHIR (Fast Healthcare Interoperability Resources) or CDA (Clinical Document Architecture). eCR allows public health agencies to receive timely details about new cases, demographics, provider information, and other relevant clinical data automatically, without manual paperwork.
+
+- **ELR (electronic Laboratory Reporting)** — This standard is used specifically for laboratory test results. When a laboratory identifies a positive result for a reportable infectious disease (for example, a positive blood culture for Salmonella), the information is sent directly to the relevant public health authorities, usually using the HL7 Version 2 messaging standard. ELR provides structured data about laboratory findings, specimen types, collection dates, and results, speeding up case detection and outbreak investigations.
+
+Both eCR and ELR have replaced older, manual methods like phone calls or faxing of results, dramatically reducing reporting delays and enabling near-real-time disease surveillance and rapid public health response to new cases.
+
+## Exercises
+
+1. Add a **7-day moving average** overlay to the syndromic chart and compare its
+   smoothness to the raw counts.
+2. Build an **age-stratified** diabetes registry table (counts by age band) - a
+   standard public-health denominator breakdown.
+3. Implement a second detector (e.g. a simple **CUSUM**) and compare which days it
+   flags versus the control-chart method.
+
+## Key takeaways
+
+- Public health informatics operates on **populations**, using **case-based** and
+  **syndromic** surveillance together.
+- **Aberration detection** on time series gives early outbreak warning.
+- **Registries** turn scattered records into trackable disease cohorts.
+- **eCR** and **ELR** are the standards that automate clinic→public-health reporting.
+
+---
+*Next: Module 13 - Claims Data Analysis.*

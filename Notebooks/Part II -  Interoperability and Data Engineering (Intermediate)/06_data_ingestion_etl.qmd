@@ -1,0 +1,466 @@
+---
+title: "Module 6: Data Ingestion and ETL Pipelines"
+---
+
+![Health-Informatics: An R Tutorial](../../Image/chapter-banner.png)
+
+**Health Informatics in R** · Part II: Interoperability & Data Engineering · Module 6 of 16
+
+---
+
+Real health data arrives messy, in mixed formats and units, from more than one
+source. Before anyone can analyze it, an **ETL pipeline** (Extract → Transform →
+Load) has to ingest, clean, normalize, and align it. This module builds a small
+but realistic, reusable pipeline.
+
+## Learning objectives
+
+By the end of this module you will be able to:
+
+1. **Extract** from more than one source (a flat export and a FHIR bundle).
+2. **Transform**: clean, **normalize units**, align timestamps, and handle missingness.
+3. **Load** into tidy, analysis-ready tables.
+4. Assemble the steps into a **reusable, logged pipeline** with a validation gate.
+5. Explain where **orchestration** tools (Airflow, Prefect) fit.
+
+## Dataset
+
+Two deliberately *messy* sources describing the same kind of data: a **CSV export**
+with mixed units and missing values, and a small **FHIR-style JSON** feed. The goal
+is to reconcile them into one clean table.
+
+```{r}
+# --- Self-contained synthetic EHR generator (identical to Part I) ---
+# This is the SAME generator from Module 1. We rebuild the fake hospital database
+# here so this notebook can run on its own. Nothing here is a real patient.
+library(dplyr)
+library(tibble)
+
+# This function generates a synthetic electronic health record (EHR) dataset.
+# It creates mock tables for patients, encounters, observations, conditions, and medications,
+# all with plausible structure, but not referencing any real patients or requiring external data.
+make_synthetic_ehr <- function(n_patients = 200, seed = 42) {
+  # Generate a small, internally-consistent synthetic EHR dataset.
+  # Returns a list of linked tibbles: patients, encounters, observations,
+  # conditions, and medications. This is for illustrative, educational use.
+  set.seed(seed)  # same seed => same fake people every run
+
+  # --- patients table ---
+  # Create a tibble with n_patients patients, each with a name, sex, age, and birth year.
+  first <- c("Ava","Liam","Noah","Mia","Zoe","Omar","Ivan","Sara","Leo","Nina",
+             "Ruth","Kai","Yara","Theo","Ida","Sam","Ana","Eli","Rex","Uma")
+  last  <- c("Khan","Ortiz","Chen","Diaz","Patel","Ali","Brown","Nash","Reed","Vega",
+             "Cole","Frost","Grant","Hale","Iqbal","Jain","Kerr","Lund","Mora","Park")
+  sexes <- sample(c("male", "female"), size = n_patients, replace = TRUE, prob = c(0.49, 0.51))
+  ages  <- sample(18:89, size = n_patients, replace = TRUE)
+  # Columns:
+  #   patient_id  — unique ID, e.g. "P1000", "P1001"
+  #   given_name / family_name — randomly chosen from the name lists
+  #   sex, age — pre-generated vectors
+  #   birth_year — derived from age, assuming the reference year 2026
+  patients <- tibble(
+    patient_id  = sprintf("P%d", 1000 + (0:(n_patients - 1))),
+    given_name  = sample(first, size = n_patients, replace = TRUE),
+    family_name = sample(last,  size = n_patients, replace = TRUE),
+    sex         = sexes,
+    age         = ages,
+    birth_year  = 2026 - ages
+  )
+
+  # --- encounters table ---
+  # Each patient gets 1–4 visits. Types and dates are random but internally consistent.
+  #   encounter_id    — unique, zero-padded (E00001, E00002, ...)
+  #   encounter_type  — ambulatory 55%, emergency 15%, inpatient 10%, wellness 20%
+  #   date            — a random day in a 3-year window starting 2023-01-01
+  enc_types <- c("ambulatory", "emergency", "inpatient", "wellness")
+  enc_list <- vector("list", 0)
+  n <- 0
+  for (pid in patients$patient_id) {
+    n_visits <- sample.int(4, 1)  # 1 to 4 encounters per patient
+    for (j in seq_len(n_visits)) {
+      n <- n + 1
+      day <- sample(0:(365 * 3 - 1), 1)  # offset within 3 years
+      enc_list[[n]] <- tibble(
+        encounter_id = sprintf("E%05d", n),
+        patient_id = pid,
+        encounter_type = sample(enc_types, 1, prob = c(0.55, 0.15, 0.10, 0.20)),
+        date = as.Date("2023-01-01") + day
+      )
+    }
+  }
+  encounters <- bind_rows(enc_list)
+
+  # --- observations table ---
+  # Labs and vitals attached to encounters. Each row is (name, unit, lo, hi).
+  # A value is drawn uniformly in [lo, hi]; 70% of (encounter, measure) pairs exist
+  # so the table looks sparse the way a real EHR does.
+  obs_defs <- tribble(
+    ~name, ~unit, ~lo, ~hi,
+    "Body height", "cm", 150, 195,
+    "Body weight", "kg", 50, 110,
+    "Systolic blood pressure", "mmHg", 100, 165,
+    "Heart rate", "/min", 55, 100,
+    "Hemoglobin A1c", "%", 4.8, 9.5
+  )
+  obs_list <- vector("list", 0)
+  m <- 0
+  for (i in seq_len(nrow(encounters))) {
+    e <- encounters[i, ]
+    for (k in seq_len(nrow(obs_defs))) {
+      if (runif(1) < 0.7) {
+        m <- m + 1
+        obs_list[[m]] <- tibble(
+          observation_id = sprintf("O%06d", m),
+          encounter_id = e$encounter_id,
+          patient_id = e$patient_id,
+          observation = obs_defs$name[k],
+          value = round(runif(1, obs_defs$lo[k], obs_defs$hi[k]), 1),
+          unit = obs_defs$unit[k],
+          date = e$date
+        )
+      }
+    }
+  }
+  observations <- bind_rows(obs_list)
+
+  # --- conditions table ---
+  # Each patient is assigned 0–3 unique diagnoses from a small pool.
+  cond_pool <- c("Essential hypertension", "Type 2 diabetes mellitus", "Asthma",
+                 "Acute bronchitis", "Major depressive disorder", "Osteoarthritis",
+                 "Chronic kidney disease", "Anemia")
+  cond_list <- vector("list", 0)
+  cn <- 0
+  for (pid in patients$patient_id) {
+    n_cond <- sample(0:3, 1)
+    if (n_cond > 0) {
+      chosen <- sample(cond_pool, size = n_cond, replace = FALSE)
+      for (cc in chosen) {
+        cn <- cn + 1
+        cond_list[[cn]] <- tibble(condition_id = sprintf("C%05d", cn), patient_id = pid, condition = cc)
+      }
+    }
+  }
+  conditions <- bind_rows(cond_list)
+
+  # --- medications table ---
+  # Same pattern as conditions: 0–3 unique drugs per patient.
+  med_pool <- c("Lisinopril", "Metformin", "Albuterol", "Atorvastatin",
+                "Sertraline", "Amoxicillin", "Ibuprofen", "Hydrochlorothiazide")
+  med_list <- vector("list", 0)
+  mn <- 0
+  for (pid in patients$patient_id) {
+    n_med <- sample(0:3, 1)
+    if (n_med > 0) {
+      chosen <- sample(med_pool, size = n_med, replace = FALSE)
+      for (mm in chosen) {
+        mn <- mn + 1
+        med_list[[mn]] <- tibble(medication_id = sprintf("M%05d", mn), patient_id = pid, medication = mm)
+      }
+    }
+  }
+  medications <- bind_rows(med_list)
+
+  list(
+    patients = patients,
+    encounters = encounters,
+    observations = observations,
+    conditions = conditions,
+    medications = medications
+  )
+}
+
+# Generate the five linked tables. Each notebook in this series starts from here.
+ehr <- make_synthetic_ehr()
+cat("Tables:", paste(sprintf("%s (%d rows)", names(ehr), sapply(ehr, nrow)), collapse = ", "), "\n")
+```
+
+```{r}
+# SOURCE A is a messy CSV export — the kind a warehouse dump or vendor feed
+# actually looks like. Three problems we will have to fix later:
+#   1. Mixed units: weight in lb AND kg, height in in AND cm
+#   2. Inconsistent labels: "a1c" instead of "Hemoglobin A1c"
+#   3. Missing values and mixed date formats (2023-05-02 vs 2023/06/11)
+#
+# readr::read_csv() can read an inline multi-line string directly, so we don't
+# need to write anything to disk. We read every column as character so the
+# messy mixed date formats and the blank A1c cell survive intact -- the
+# Extract step below is what fixes types deliberately, not the CSV reader.
+library(readr)
+
+messy_csv <- "patient_id,measure,reading,units,recorded
+P1000,weight,187,lb,2023-05-02
+P1000,height,70,in,2023-05-02
+P1000,a1c,7.1,%,2023-05-02
+P1001,weight,82,kg,2023/06/11
+P1001,a1c,,%,2023-06-11
+P1002,weight,205,lb,2023-07-19
+P1002,height,168,cm,2023-07-19"
+
+source_a <- read_csv(messy_csv, col_types = cols(.default = col_character()))
+cat("SOURCE A (messy CSV):\n")
+print(as.data.frame(source_a), row.names = FALSE)
+```
+
+```{r}
+# SOURCE B is a FHIR-style observation feed: already coded (LOINC), already in
+# SI units, nested as a list of named lists instead of a flat table.
+# Real FHIR would wrap each of these in an Observation resource; we keep the
+# payload small so the extract step is easy to follow.
+#
+# Notice the field names differ from Source A:
+#   subject vs patient_id, display vs measure, date vs recorded, ...
+# That mismatch is exactly why Extract has to map both sources onto one schema.
+source_b <- list(
+  list(subject = "P1003", loinc = "29463-7", display = "Body weight",
+       value = 74.0, unit = "kg", date = "2023-08-01"),
+  list(subject = "P1003", loinc = "4548-4", display = "Hemoglobin A1c",
+       value = 6.4, unit = "%", date = "2023-08-01"),
+  list(subject = "P1004", loinc = "8302-2", display = "Body height",
+       value = 181.0, unit = "cm", date = "2023-08-03")
+)
+cat("SOURCE B (FHIR-style JSON):", length(source_b), "observations\n")
+```
+
+## 6.1 Extract - normalize each source to a common schema
+
+In the Extract step, we take columns with different names and formats from each source
+and map them into a common structure. This means renaming columns and reformatting where
+necessary, so that whether the data comes from a messy CSV file or a FHIR-style JSON feed,
+each row will have the same set of columns: (patient_id, measure, value, unit, date).
+This standardization is essential so further processing steps can treat all data uniformly.
+
+```{r}
+# The first transform is STRUCTURAL: map each source's idiosyncratic columns
+# onto a shared target schema. After this, every row looks the same:
+#   patient_id, measure, value, unit, date
+# regardless of whether it came from a CSV dump or a FHIR feed.
+library(purrr)
+
+TARGET_COLS <- c("patient_id", "measure", "value", "unit", "date")
+
+extract_source_a <- function(df) {
+  # CSV used "reading"/"units"/"recorded"; rename them to the target names.
+  out <- df %>% rename(value = reading, unit = units, date = recorded)
+  # as.numeric() turns the empty A1c cell into NA instead of a blank string.
+  # suppressWarnings() silences the "NAs introduced by coercion" note — that
+  # coercion is exactly what we want.
+  out$value <- suppressWarnings(as.numeric(out$value))
+  out[, TARGET_COLS]
+}
+
+extract_source_b <- function(records) {
+  # Walk the list of named lists and pick the fields we care about.
+  # tolower() + removing "body " turns "Body weight" into "weight" so it
+  # matches Source A's "weight" / "height" labels.
+  rows <- map_dfr(records, function(r) {
+    tibble(
+      patient_id = r$subject,
+      measure = gsub("body ", "", tolower(r$display), fixed = TRUE),
+      value = r$value,
+      unit = r$unit,
+      date = r$date
+    )
+  })
+  rows[, TARGET_COLS]
+}
+
+a <- extract_source_a(source_a)
+b <- extract_source_b(source_b)
+
+# Harmonize leftover label differences: Source A said "a1c", we want one name.
+a$measure <- ifelse(a$measure == "a1c", "hemoglobin a1c", a$measure)
+b$measure <- ifelse(b$measure == "a1c", "hemoglobin a1c", b$measure)
+
+# Stack the two sources into one table. bind_rows() rebuilds row numbers.
+raw <- bind_rows(a, b)
+cat("Extracted + unified schema:\n")
+print(as.data.frame(raw), row.names = FALSE)
+```
+
+## 6.2 Transform - unit normalization
+
+Health data often comes in a mix of units (like pounds vs. kilograms, inches vs. centimeters),
+which can lead to serious mistakes if not handled—imagine treating a weight in pounds as if it were kilograms.
+To avoid such errors, we standardize (normalize) all measurements to SI units (kg, cm, %).
+
+```{r}
+# Mixed units are a classic source of silent, dangerous errors in health data.
+# A weight of 187 lb read as kg is a 2.2x error — enough to change a drug dose.
+# We convert everything that isn't already SI into SI (kg, cm, %).
+normalize_units <- function(df) {
+  # case_when() is the vectorized version of the Python (measure, unit) -> conversion
+  # lookup: for each row, check whether it needs a conversion; otherwise leave
+  # the value and unit unchanged (already SI: kg, cm, %).
+  df %>%
+    mutate(
+      new_unit = case_when(
+        measure == "weight" & unit == "lb" ~ "kg",   # pounds -> kilograms
+        measure == "height" & unit == "in" ~ "cm",   # inches -> centimetres
+        TRUE ~ unit
+      ),
+      new_value = case_when(
+        measure == "weight" & unit == "lb" ~ round(value * 0.453592, 1),
+        measure == "height" & unit == "in" ~ round(value * 2.54, 1),
+        TRUE ~ value
+      ),
+      unit = new_unit,
+      value = new_value
+    ) %>%
+    select(-new_unit, -new_value)
+}
+
+normalized <- normalize_units(raw)
+cat("After unit normalization (all SI):\n")
+print(as.data.frame(normalized), row.names = FALSE)
+```
+
+### Milestone 1 - align timestamps and handle missingness
+
+In this step, we standardize the date formats (align timestamps) so all dates are uniform and machine-readable,
+and we handle missing data by removing any rows that do not have a measured value,
+ensuring only complete, properly-timestamped records are used downstream.
+
+```{r}
+# Two remaining messes: dates in mixed formats, and a row with no measured value.
+library(lubridate)
+
+clean_temporal_and_missing <- function(df) {
+  # Source A mixed "2023-05-02" and "2023/06/11". lubridate::ymd() accepts
+  # either separator and parses both into Date objects; anything unparseable
+  # becomes NA instead of crashing.
+  df <- df %>% mutate(date = suppressWarnings(ymd(date)))
+
+  before <- nrow(df)
+  # Drop rows with no measured value. We do NOT impute a lab that was never
+  # taken — inventing an A1c is worse than leaving the row out.
+  df <- df %>% filter(!is.na(value))
+  dropped <- before - nrow(df)
+  cat(sprintf("Dropped %d row(s) with missing value; %d remain.\n", dropped, nrow(df)))
+  df
+}
+
+clean <- clean_temporal_and_missing(normalized)
+print(as.data.frame(clean), row.names = FALSE)
+```
+
+## 6.3 Load — a validation gate before anything ships
+
+Before loading data into downstream systems, the pipeline must enforce basic data quality checks—rejecting any records that fail plausibility rules. Here, we introduce a validation "gate" that catches obviously erroneous values (such as impossible heights or weights), inspired by practices you'll learn in depth in Module 8.
+
+```{r}
+# A pipeline should REFUSE TO LOAD data that fails basic checks.
+# These ranges are coarse "could a human possibly have this value?" bounds,
+# not clinical reference ranges. A weight of 500 kg is a data error; 90 kg is not.
+# This is a lightweight preview of Module 8's data-quality work.
+PLAUSIBLE <- list(  # measure -> c(min, max) in SI units
+  weight = c(2, 350),
+  height = c(30, 250),
+  `hemoglobin a1c` = c(3, 20)
+)
+
+validate <- function(df) {
+  problems <- list()
+  for (i in seq_len(nrow(df))) {
+    r <- df[i, ]
+    rng <- PLAUSIBLE[[r$measure]]  # NULL if we have no range for this measure
+    if (!is.null(rng) && !(r$value >= rng[1] && r$value <= rng[2])) {
+      problems[[length(problems) + 1]] <- list(patient_id = r$patient_id, measure = r$measure, value = r$value)
+    }
+  }
+  problems
+}
+
+issues <- validate(clean)
+if (length(issues) == 0) {
+  cat("Validation gate: PASS\n")
+} else {
+  cat("Validation gate: FAIL",
+      paste(sapply(issues, function(p) sprintf("('%s', '%s', %s)", p$patient_id, p$measure, p$value)), collapse = ", "),
+      "\n")
+}
+```
+
+### Milestone 2 - assemble the reusable pipeline
+
+In this section, we'll assemble all the ETL steps into a single, reusable pipeline function.
+This function will combine extraction, transformation, cleaning, and validation,
+ensuring that all data passes through the same process before being loaded for analytics.
+
+```{r}
+# Wrap the steps we already wrote into one reusable function with logging.
+# In production this is the function an orchestrator (Airflow, Prefect) would call.
+#
+# R has no direct analog to Python's logging module for a teaching notebook, so
+# these two tiny helpers print timestamp-free, level-tagged lines with cat() —
+# same information, same points in the pipeline.
+log_info <- function(msg) cat(sprintf("[INFO] %s\n", msg))
+log_error <- function(msg) cat(sprintf("[ERROR] %s\n", msg))
+
+run_pipeline <- function(csv_df, fhir_records) {
+  log_info("EXTRACT: reading 2 sources")
+  a <- extract_source_a(csv_df)
+  b <- extract_source_b(fhir_records)
+  a$measure <- ifelse(a$measure == "a1c", "hemoglobin a1c", a$measure)
+  b$measure <- ifelse(b$measure == "a1c", "hemoglobin a1c", b$measure)
+  raw <- bind_rows(a, b)
+
+  log_info(sprintf("TRANSFORM: %d rows -> normalizing units", nrow(raw)))
+  df <- normalize_units(raw)
+  df <- clean_temporal_and_missing(df)
+
+  log_info("VALIDATE: running plausibility gate")
+  if (length(validate(df)) > 0) {
+    # Abort rather than load bad data. Module 8 will show a quarantine alternative.
+    log_error("LOAD ABORTED: validation failed")
+    return(NULL)
+  }
+
+  log_info(sprintf("LOAD: %d clean rows ready for analytics", nrow(df)))
+  df %>% arrange(patient_id, date)
+}
+
+analytics_ready <- run_pipeline(source_a, source_b)
+analytics_ready
+```
+
+## 6.4 Where orchestration fits
+
+The pipeline function defined above executes the ETL (Extract, Transform, Load) workflow as a single sequence, running each step in order from start to finish within one call. While this linear execution works well in experimental or prototyping environments like notebooks, real-world data systems require additional capabilities to ensure robust, reliable, and manageable data processing.
+
+In a production environment, you typically want to introduce **orchestration** — the process of managing, monitoring, and automating the execution of data pipelines. Dedicated orchestration tools such as **Apache Airflow** and **Prefect** provide features like:
+- **Scheduling**: Automatically running pipelines at specified times, such as hourly, daily, or in response to external triggers.
+- **Retries**: If a step fails, automatically attempting it again without manual intervention, possibly with configurable backoff and thresholds.
+- **Dependency Management**: Defining the precise order in which steps (known as "tasks") should run based on their dependencies; e.g., not starting a transformation until extraction is complete.
+- **Monitoring and Alerting**: Keeping track of the status and health of pipeline runs, and sending notifications or logging errors if something goes wrong.
+
+These tools visualize and control your pipeline as a **Directed Acyclic Graph (DAG)**, where each function or step in your process is represented as a task. The conceptual structure for the pipeline above might look like this:
+
+```
+extract_a ─┐
+           ├─> transform ─> validate ─> load
+extract_b ─┘
+```
+
+In this DAG, the `extract_a` and `extract_b` tasks (which can run independently or in parallel) both feed their outputs into a `transform` task. The transformed data then passes through `validate` and `load` tasks sequentially. The DAG structure allows the orchestrator to know exactly which steps depend on others, and thus handle execution order, error handling, and retries automatically.
+
+The benefit of using an orchestrator is that you do not have to change the logic of your ETL steps—these remain as R functions—but you wrap and schedule them within the orchestrator's workflow definition. This separation allows you to build robust data pipelines that can handle failures gracefully, rerun specific steps, integrate with business calendars, monitor for issues, and alert you when things deviate from expectations. All of this is essential for reliable, production-grade data engineering.
+
+## Exercises
+
+1. Add a **temperature** measure to Source A in °F and extend `normalize_units`
+   to convert to °C.
+2. Make the pipeline **idempotent**: de-duplicate on
+   `(patient_id, measure, date)` so re-running doesn't double-load.
+3. Change the validation gate to **quarantine** bad rows (write them aside) instead
+   of aborting the whole load, and report how many were quarantined.
+
+## Key takeaways
+
+- ETL is **Extract → Transform → Load**; in health data the transform is dominated
+  by **unit normalization, temporal alignment, and missingness**.
+- A **validation gate** should stand between transform and load.
+- Wrap steps into a **logged, reusable function**; hand *scheduling and reliability*
+  to an **orchestrator**.
+
+---
+*Next: Module 7 - Common Data Models (OMOP CDM).*

@@ -1,0 +1,770 @@
+---
+title: "Module 16: Emerging Directions"
+---
+
+![](../../Image/chapter-banner.png)
+
+**Health Informatics in R** · Part IV: Advanced Topics · Module 16 of 16
+
+---
+
+The final module looks at where health informatics is heading: **large language
+models** for documentation and coding, **FHIR + generative AI** patterns,
+**agentic AI** (plan-over-tools over a claims book), **federated** approaches
+that analyze data without moving it, and the **ethics, regulation, and equity**
+questions that decide whether any of it should ship.
+
+## Learning objectives
+
+By the end of this module you will be able to:
+
+1. Describe how **LLMs** are applied to clinical documentation and **autocoding**.
+2. Implement the **extract → structure → validate** pattern for LLM-assisted coding
+   (with a deterministic mock so it runs offline).
+3. Explain the **FHIR + generative AI** integration pattern.
+4. Build a small **agentic** controller: named tools, a fixed plan, intent routing,
+   and an audit trail — with the LLM allowed only to *rephrase* numbers.
+5. Demonstrate a **federated** computation that shares statistics, not records.
+6. Run a basic **equity/bias** check on subgroup performance.
+
+## Dataset
+
+The synthetic EHR plus the clinical-note style text from Module 10. The "LLM" here
+is a **deterministic mock** so the notebook runs without external API calls; the
+*pattern* is identical to a real LLM integration.
+
+The **agentic** section uses a compact synthetic **claims book** (the shape of
+Module 13's member-year table) so the controller has tools to call — still
+offline, still no PHI.
+
+```{r}
+#| label: setup
+library(dplyr)
+library(tibble)
+library(jsonlite)
+library(lubridate)
+
+# --- Self-contained synthetic EHR generator (identical to earlier parts) ---
+
+# This function generates a synthetic electronic health record (EHR) dataset with several tables.
+make_synthetic_ehr <- function(n_patients = 200, seed = 42) {
+  set.seed(seed)  # Random seed for reproducibility
+
+  # Define some sample names
+  first <- c("Ava","Liam","Noah","Mia","Zoe","Omar","Ivan","Sara","Leo","Nina",
+             "Ruth","Kai","Yara","Theo","Ida","Sam","Ana","Eli","Rex","Uma")
+  last  <- c("Khan","Ortiz","Chen","Diaz","Patel","Ali","Brown","Nash","Reed","Vega",
+             "Cole","Frost","Grant","Hale","Iqbal","Jain","Kerr","Lund","Mora","Park")
+
+  # Generate patient demographics
+  ages <- sample(18:89, n_patients, replace = TRUE)
+  patients <- tibble(
+    patient_id = sprintf("P%d", 1000 + 0:(n_patients - 1)),
+    given_name = sample(first, n_patients, replace = TRUE),
+    family_name = sample(last, n_patients, replace = TRUE),
+    sex = sample(c("male", "female"), n_patients, replace = TRUE, prob = c(0.49, 0.51)),
+    age = ages,
+    birth_year = 2026 - ages
+  )
+
+  # Generate random healthcare encounters for each patient
+  enc_types <- c("ambulatory", "emergency", "inpatient", "wellness")
+  enc_rows <- vector("list", n_patients)
+  eid <- 0
+  for (i in seq_len(n_patients)) {
+    pid <- patients$patient_id[i]
+    n_enc <- sample(1:4, 1)  # Each patient gets 1-4 encounters
+    day <- sample(0:(365 * 3 - 1), n_enc, replace = TRUE)  # Random day in a 3-year window
+    ids <- sprintf("E%05d", eid + seq_len(n_enc))
+    eid <- eid + n_enc
+    enc_rows[[i]] <- tibble(
+      encounter_id = ids,
+      patient_id = pid,
+      encounter_type = sample(enc_types, n_enc, replace = TRUE, prob = c(0.55, 0.15, 0.10, 0.20)),
+      date = as.Date("2023-01-01") + day
+    )
+  }
+  encounters <- bind_rows(enc_rows)
+
+  # Generate observations for each encounter
+  obs_defs <- tribble(
+    ~observation,               ~unit,   ~lo,  ~hi,
+    "Body height",               "cm",    150,  195,
+    "Body weight",                "kg",    50,   110,
+    "Systolic blood pressure",   "mmHg",  100,  165,
+    "Heart rate",                 "/min",  55,   100,
+    "Hemoglobin A1c",             "%",     4.8,  9.5
+  )
+  obs_rows <- vector("list", nrow(encounters))
+  for (i in seq_len(nrow(encounters))) {
+    e <- encounters[i, ]
+    keep <- runif(nrow(obs_defs)) < 0.7  # 70% chance that the observation appears for the encounter
+    if (any(keep)) {
+      d <- obs_defs[keep, ]
+      obs_rows[[i]] <- tibble(
+        encounter_id = e$encounter_id, patient_id = e$patient_id,
+        observation = d$observation, value = round(runif(nrow(d), d$lo, d$hi), 1),
+        unit = d$unit, date = e$date
+      )
+    }
+  }
+  observations <- bind_rows(obs_rows) %>%
+    mutate(observation_id = sprintf("O%06d", row_number())) %>%
+    relocate(observation_id)
+
+  # Generate conditions (diagnoses) for each patient
+  cond_pool <- c("Essential hypertension", "Type 2 diabetes mellitus", "Asthma",
+                 "Acute bronchitis", "Major depressive disorder", "Osteoarthritis",
+                 "Chronic kidney disease", "Anemia")
+  cond_rows <- vector("list", n_patients)
+  for (i in seq_len(n_patients)) {
+    pid <- patients$patient_id[i]
+    # Each patient has 0-3 random conditions
+    n_c <- sample(0:3, 1)
+    if (n_c > 0) cond_rows[[i]] <- tibble(patient_id = pid, condition = sample(cond_pool, n_c, replace = FALSE))
+  }
+  conditions <- bind_rows(cond_rows) %>%
+    mutate(condition_id = sprintf("C%05d", row_number())) %>%
+    relocate(condition_id)
+
+  # Generate medications for each patient
+  med_pool <- c("Lisinopril", "Metformin", "Albuterol", "Atorvastatin", "Sertraline",
+                "Amoxicillin", "Ibuprofen", "Hydrochlorothiazide")
+  med_rows <- vector("list", n_patients)
+  for (i in seq_len(n_patients)) {
+    pid <- patients$patient_id[i]
+    # Each patient takes 0-3 random medications
+    n_m <- sample(0:3, 1)
+    if (n_m > 0) med_rows[[i]] <- tibble(patient_id = pid, medication = sample(med_pool, n_m, replace = FALSE))
+  }
+  medications <- bind_rows(med_rows) %>%
+    mutate(medication_id = sprintf("M%05d", row_number())) %>%
+    relocate(medication_id)
+
+  # Return all generated tables in a list
+  list(patients = patients, encounters = encounters, observations = observations,
+       conditions = conditions, medications = medications)
+}
+
+# Generate the synthetic dataset and print the number of rows in each table.
+ehr <- make_synthetic_ehr()
+cat("Tables:", paste(sprintf("%s (%d)", names(ehr), sapply(ehr, nrow)), collapse = ", "), "\n")
+```
+
+## 16.1 LLMs for clinical documentation and coding
+
+Large Language Models (LLMs) are increasingly utilized in clinical documentation workflows
+for a range of applications:
+
+- **Ambient scribing:** Transforming real-time physician-patient conversations into structured clinical notes.
+- **Summarization:** Creating concise summaries from lengthy, complex patient charts to assist clinician review.
+- **Autocoding:** Automatically suggesting diagnostic (ICD) or clinical finding (SNOMED) codes from unstructured text, e.g., physician notes.
+
+A robust and safe engineering approach for integrating LLM outputs in healthcare follows this pipeline:
+
+1. **Extract** — The LLM identifies relevant information or codes from the source text.
+2. **Structure** — The extracted outputs are converted into a predefined, structured format (such as JSON with explicit fields).
+3. **Validate** — Deterministic rules or lookups check whether the suggested outputs (e.g., codes) are syntactically valid, allowed, and sufficiently confident.
+4. **Human review** — Qualified clinicians review, accept, or edit the LLM's proposals before they're entered into the record.
+
+This ensures that the LLM only *proposes* outputs; automated checks and expert review prevent propagation of errors. Raw, unchecked model suggestions should **never** be finalized without such validation and human oversight.
+
+```{r}
+# Define a codebook that maps clinical terms to ICD-10 and SNOMED codes.
+CODE_BOOK <- list(
+  "hypertension" = list(icd10 = "I10", snomed = "38341003"),
+  "type 2 diabetes" = list(icd10 = "E11.9", snomed = "44054006"),
+  "asthma" = list(icd10 = "J45.909", snomed = "195967001"),
+  "depression" = list(icd10 = "F32.9", snomed = "370143000")
+)
+
+# Simulates an LLM that proposes medical codes based on input note text.
+#
+# Args:
+#   note_text (character): Clinical note text.
+#
+# Returns:
+#   list: A list containing code suggestions the LLM might return.
+#         Each suggestion includes the mention, ICD-10 code, SNOMED code,
+#         and a model confidence score.
+mock_llm_autocode <- function(note_text) {
+  text <- tolower(note_text)
+  suggestions <- list()
+  # For each term in the code book, check if it appears in the note.
+  for (term in names(CODE_BOOK)) {
+    if (grepl(term, text, fixed = TRUE)) {
+      # If found, add a suggestion with a high (simulated) confidence.
+      codes <- CODE_BOOK[[term]]
+      suggestions[[length(suggestions) + 1]] <- list(
+        mention = term, icd10 = codes$icd10, snomed = codes$snomed, model_confidence = 0.9
+      )
+    }
+  }
+  list(suggested_codes = suggestions)
+}
+
+# Example patient note for demonstration.
+note <- paste(
+  "58 y/o with history of hypertension and type 2 diabetes presents for",
+  "follow-up. Screen for depression."
+)
+
+# Get mock model output for the note.
+raw <- mock_llm_autocode(note)
+
+cat("Raw model output (as an LLM would return):\n")
+cat(toJSON(raw, auto_unbox = TRUE, pretty = TRUE))
+```
+
+### Milestone 1 — validate model output before trusting it
+
+Before using the LLM's output, we must rigorously validate the suggested codes.
+This includes checking each suggestion for acceptable ICD-10 codes and ensuring
+that the model's confidence is above a minimum threshold. Only suggestions that
+meet these criteria should be considered for clinician review; others should be
+flagged for further inspection and never automatically entered into the clinical record.
+
+```{r}
+# Define a set of ICD-10 codes that are considered valid for further review.
+VALID_ICD <- c("I10", "E11.9", "J45.909", "F32.9", "J20.9")
+
+# Validates model-suggested codes before they are sent for clinician review.
+#
+# Args:
+#   model_output (list): Model output containing 'suggested_codes', where each suggestion is a
+#                         list with fields including 'icd10' and 'model_confidence'.
+#   min_conf (double): Minimum model confidence required to accept a suggestion.
+#
+# Returns:
+#   list(accepted, flagged): tibble of accepted suggestions (valid code + confident)
+#                             and tibble of flagged suggestions (invalid code or low confidence)
+validate_autocode <- function(model_output, min_conf = 0.5) {
+  accepted <- list()
+  flagged <- list()
+  for (s in model_output$suggested_codes) {
+    # Accept the suggestion if the code is in the allowed set and confidence is high enough.
+    ok <- (s$icd10 %in% VALID_ICD) && (s$model_confidence >= min_conf)
+    if (ok) accepted[[length(accepted) + 1]] <- s else flagged[[length(flagged) + 1]] <- s
+  }
+  list(
+    accepted = if (length(accepted)) bind_rows(lapply(accepted, as_tibble)) else tibble(),
+    flagged = if (length(flagged)) bind_rows(lapply(flagged, as_tibble)) else tibble()
+  )
+}
+
+# Run validation on the mock model's output.
+result <- validate_autocode(raw)
+accepted <- result$accepted
+flagged <- result$flagged
+
+cat("ACCEPTED (valid code + confident) -> queued for clinician review:\n")
+# Show core columns of accepted (validated) suggestions.
+print(as.data.frame(accepted[, c("mention", "icd10", "snomed", "model_confidence")]), row.names = FALSE)
+cat(sprintf("\nFlagged/rejected: %d  (would never post automatically)\n", nrow(flagged)))
+```
+
+## 16.2 The FHIR + generative AI pattern
+
+When integrating a large language model (LLM) into a clinical environment, the optimal and safest architecture ensures that FHIR (Fast Healthcare Interoperability Resources) continues to serve as the system's single source of truth for patient data. This process unfolds through several key stages:
+
+1. **Read**: Existing FHIR resources (such as Conditions, Observations, Medications, etc.) are read from the clinical system and form the input data for context assembly.
+2. **Context Assembly**: Relevant information is organized and collated—often including specific patient data, observations, and prior notes—into a structured or semi-structured input that is provided to the LLM.
+3. **LLM Inference**: The LLM processes the assembled context and generates structured output, typically with suggestions or predictions such as proposed diagnoses, summaries, or potential coding.
+4. **Validation and Write-Back**: Critically, before any information generated by the LLM is incorporated into the medical record, its output undergoes validation (e.g., reviewed by a clinician or checked against rules and thresholds). Only after this validation step do approved results get encoded as FHIR resources and written back to the health system.
+
+This process is often visualized as:
+
+```
+FHIR resources  ──►  context assembly  ──►  LLM  ──►  structured output
+      ▲                                                      │
+      └──────────  write back as FHIR (after validation) ────┘
+```
+
+Importantly, the LLM should always operate as a supplement to, not a replacement for, the authoritative health record. It should read only from FHIR (ensuring input is up-to-date and governed), and any data it produces must be validated before it is written back as new or updated FHIR resources. This keeps all patient information within the traceable, auditable FHIR workflow—preventing isolated "side channels" of AI output and supporting transparency, accountability, and provenance in clinical data augmentation.
+
+```{r}
+# This function converts each accepted model suggestion into a FHIR Condition resource.
+# - FHIR (Fast Healthcare Interoperability Resources) is a healthcare data standard for electronic health records.
+# - A "Condition" resource in FHIR encodes a clinical condition (here, an AI-suggested diagnosis or mention).
+# - We provide patient context using the patient_id, add SNOMED coding, and tag the resource as "llm-assisted" for auditability.
+
+to_fhir_condition <- function(row, patient_id = "P1001") {
+  list(
+    resourceType = "Condition",  # Specify the FHIR resource type.
+    clinicalStatus = list(coding = list(list(code = "active"))),  # Set condition as 'active'.
+    code = list(
+      coding = list(list(
+        system = "http://snomed.info/sct",  # Use SNOMED CT for clinical coding.
+        code = row$snomed,                  # The predicted clinical code.
+        display = row$mention               # Human-readable mention from the note.
+      ))
+    ),
+    subject = list(reference = sprintf("Patient/%s", patient_id)),  # Link to FHIR Patient resource.
+    meta = list(
+      tag = list(list(
+        code = "llm-assisted",
+        display = "AI-suggested, clinician-reviewed"  # Track AI involvement for audit.
+      ))
+    )
+  )
+}
+
+# Convert all accepted suggestions into FHIR Condition resources.
+conditions_fhir <- lapply(seq_len(nrow(accepted)), function(i) to_fhir_condition(accepted[i, ]))
+
+cat("Write-back as FHIR Condition (tagged as AI-assisted for provenance):\n")
+
+# Show the structure of a generated FHIR Condition resource for reference.
+cat(toJSON(conditions_fhir[[1]], auto_unbox = TRUE, pretty = TRUE))
+```
+
+## 16.3 Agentic AI — plan over tools (claims)
+
+A **chatbot** answers in prose. An **agent** is a **controller** that calls
+**named tools** with contracts, in a **plan**, and leaves an **audit trail**.
+Module 13 built the claims analytics pipeline by hand. Wrapping that pipeline
+as an agent is how health systems are starting to expose informatics work to
+analysts in plain English — without letting a language model invent an HCC score.
+
+```
+  raw claims + eligibility
+           │
+           ▼
+     [clean] → [features: PMPM · HCC] → [risk tiers] → [brief / worklist]
+           │                                      ▲
+           └──────── ask("who is high risk?") ────┘   (router, not a guessing LLM)
+```
+
+**Decision support, not autonomous payment or care.** The agent *recommends*
+(risk tiers, outreach lists). A human (care manager, actuary, medical director)
+decides. This is not a certified CMS-HCC grouper, a HEDIS engine, or medical advice.
+
+| Pattern | What the model is allowed to do |
+|---|---|
+| Single LLM call (16.1) | Propose codes from a note — then **validate** |
+| FHIR + gen AI (16.2) | Read FHIR, write FHIR **after** review |
+| **Agent (this section)** | Choose a **tool**; the tool computes; the model may **rephrase KPIs** |
+
+The engine below is **deterministic and offline**. An optional live model would
+only rewrite the briefing — the metrics stay with `kpis()`.
+
+```{r}
+# Mini claims *book* — the member-year table Module 13 would have produced.
+# Kept small so the agent (not the simulator) is the teaching point.
+set.seed(7)
+n <- 80
+ages <- sample(55:89, n, replace = TRUE)
+hcc <- pmin(pmax(round(0.6 + (ages - 55) * 0.015 + rnorm(n, 0, 0.15), 3), 0.4), 2.4)
+pmpm <- pmin(pmax(round(400 + hcc * 420 + rnorm(n, 0, 180), 2), 80), 8000)
+er <- pmin(rpois(n, 0.35), 5)
+ip <- pmin(rpois(n, 0.20), 3)
+diabetes <- rbinom(n, 1, 0.28)
+
+tier_fn <- function(h, e, i) {
+  if (h >= 1.45 || i >= 2 || e >= 3) return("4 - Critical")
+  if (h >= 1.15 || i >= 1 || e >= 2) return("3 - High")
+  if (h >= 0.9) return("2 - Rising")
+  "1 - Low"
+}
+
+book <- tibble(
+  member_id = sprintf("M%d", 2000 + 0:(n - 1)),
+  age = ages,
+  hcc = hcc,
+  pmpm = pmpm,
+  er_visits = er,
+  ip_visits = ip,
+  has_diabetes = diabetes,
+  glucose_tested = rbinom(n, 1, 0.72) * diabetes  # only diabetics can "count"
+)
+book$risk_tier <- mapply(tier_fn, book$hcc, book$er_visits, book$ip_visits)
+# Diabetics without a glucose test are the care-gap list (HEDIS-like, educational)
+book$care_gap <- (book$has_diabetes == 1) & (book$glucose_tested == 0)
+
+cat(sprintf("Agent book: %d members · mean PMPM $%s · mean HCC %.3f\n",
+            nrow(book), formatC(mean(book$pmpm), format = "f", digits = 0, big.mark = ","), mean(book$hcc)))
+print(table(book$risk_tier))
+```
+
+```{r}
+# ClaimsInformaticsAgent: a thin controller, implemented as a mutable environment.
+#   run()       = compute KPIs from the book (the "plan")
+#   ask()       = keyword router onto tools  (not an LLM inventing numbers)
+#   log_event() = audit trail so you can reconstruct what ran
+
+make_claims_agent <- function(book_df) {
+  self <- new.env()
+  self$book <- book_df
+  self$focus <- NULL       # last member_id named (conversation memory)
+  self$audit <- list()
+  self$kpis_cache <- NULL
+
+  self$log_event <- function(tool, detail = "") {
+    self$audit[[length(self$audit) + 1]] <- list(
+      ts = format(now(), "%Y-%m-%dT%H:%M:%S"),
+      tool = tool,
+      detail = substr(as.character(detail), 1, 180)
+    )
+  }
+
+  self$kpis <- function() {
+    df <- self$book
+    high <- df$risk_tier %in% c("3 - High", "4 - Critical")
+    top_n <- max(1, as.integer(nrow(df) * 0.05))
+    top5 <- head(df[order(-df$pmpm), ], top_n)
+    list(
+      n_members = nrow(df),
+      avg_age = mean(df$age),
+      avg_pmpm = mean(df$pmpm),
+      avg_hcc = mean(df$hcc),
+      high_critical = sum(high),
+      high_critical_pct = mean(high) * 100,
+      top5_cost_share = sum(top5$pmpm) / sum(df$pmpm) * 100,
+      care_gap_n = sum(df$care_gap),
+      n_diabetes = sum(df$has_diabetes)
+    )
+  }
+
+  # Fixed plan: feature table is already here; freeze KPIs for the briefing.
+  self$run <- function() {
+    self$log_event("run", "freeze KPIs from member-year book")
+    self$kpis_cache <- self$kpis()
+    invisible(self)
+  }
+
+  self$briefing <- function() {
+    k <- if (!is.null(self$kpis_cache)) self$kpis_cache else self$kpis()
+    action_lines <- c(
+      strwrap("1. Assign High/Critical members to intensive case management.", width = 70, indent = 2, exdent = 5),
+      strwrap("2. Work the glucose-test gap list, highest PMPM first.", width = 70, indent = 2, exdent = 5),
+      strwrap("3. Do not treat these figures as a CMS settlement or HEDIS submission.", width = 70, indent = 2, exdent = 5)
+    )
+    lines <- c(
+      "CLAIMS INFORMATICS — LEADERSHIP BRIEFING (synthetic)",
+      strrep("-", 54),
+      sprintf("Population   %d members · mean age %.1f", k$n_members, k$avg_age),
+      sprintf("Spend        $%s mean PMPM", formatC(k$avg_pmpm, format = "f", digits = 2, big.mark = ",")),
+      sprintf("Risk         mean HCC %.3f (1.0 would be a real book's average)", k$avg_hcc),
+      sprintf("             High/Critical %d (%.1f%%)", k$high_critical, k$high_critical_pct),
+      sprintf("Concentration top 5%% of members = %.1f%% of PMPM mass", k$top5_cost_share),
+      sprintf("Quality      %d of %d diabetics missing a glucose test", k$care_gap_n, k$n_diabetes),
+      "",
+      "Recommended actions (human review required)",
+      action_lines
+    )
+    paste(lines, collapse = "\n")
+  }
+
+  self$worklist <- function(n = 8) {
+    df <- self$book[startsWith(self$book$risk_tier, "3") | startsWith(self$book$risk_tier, "4"), ]
+    cols <- c("member_id", "age", "risk_tier", "pmpm", "hcc", "er_visits", "ip_visits")
+    df <- df[order(-df$pmpm), ]
+    head(df[, cols], n)
+  }
+
+  self$ask <- function(question) {
+    q <- trimws(question)
+    ql <- tolower(q)
+    self$log_event("ask", q)
+
+    member_key <- NULL
+    m <- regmatches(q, regexpr("\\bM\\d{4}\\b", q, ignore.case = TRUE))
+    if (length(m) > 0 && nzchar(m)) {
+      member_key <- toupper(m)
+      self$focus <- member_key
+    } else if (!is.null(self$focus) && grepl("\\b(it|its|this member|that member)\\b", ql)) {
+      member_key <- self$focus
+    }
+
+    if (!is.null(member_key)) {
+      row <- self$book[self$book$member_id == member_key, ]
+      if (nrow(row) == 0) return(sprintf("%s is not in this book.", member_key))
+      r <- row[1, ]
+      return(sprintf(
+        "%s · age %d · %s\nHCC %.2f · PMPM $%s · ER %d · IP %d\n(Recommendation only — a clinician confirms any outreach.)",
+        r$member_id, as.integer(r$age), r$risk_tier, r$hcc,
+        formatC(r$pmpm, format = "f", digits = 2, big.mark = ","), as.integer(r$er_visits), as.integer(r$ip_visits)
+      ))
+    }
+
+    if (grepl("care management|high risk|critical|worklist|who needs|outreach", ql)) {
+      wl <- self$worklist()
+      lines <- c("Care-management worklist (High/Critical, highest PMPM first)",
+                 "Human review required before outreach.\n")
+      for (i in seq_len(nrow(wl))) {
+        r <- wl[i, ]
+        lines <- c(lines, sprintf("  %s  %s  PMPM $%s  HCC %.2f", r$member_id, r$risk_tier,
+                                   formatC(r$pmpm, format = "f", digits = 0, big.mark = ","), r$hcc))
+      }
+      return(paste(lines, collapse = "\n"))
+    }
+
+    if (grepl("care gap|glucose|quality|diabetes", ql)) {
+      g <- self$book[self$book$care_gap, ]
+      g <- head(g[order(-g$pmpm), ], 6)
+      lines <- sprintf("Glucose-test gap: %d diabetic members\n", sum(self$book$care_gap))
+      for (i in seq_len(nrow(g))) {
+        r <- g[i, ]
+        lines <- c(lines, sprintf("  %s  %s  $%s PMPM", r$member_id, r$risk_tier,
+                                   formatC(r$pmpm, format = "f", digits = 0, big.mark = ",")))
+      }
+      return(paste(lines, collapse = "\n"))
+    }
+
+    if (grepl("brief|summary|kpi|leadership", ql)) return(self$briefing())
+
+    if (grepl("\\bhelp\\b", ql)) {
+      return("Ask: 'who needs care management?', 'care gaps', 'brief leadership', or 'profile M2000'.")
+    }
+
+    "I could not route that. Try 'help'."
+  }
+
+  class(self) <- "ClaimsInformaticsAgent"
+  self
+}
+
+agent <- make_claims_agent(book)
+agent$run()
+cat("Pipeline complete. KPIs frozen:\n")
+cat(toJSON(agent$kpis_cache, auto_unbox = TRUE, pretty = TRUE))
+cat("\n")
+cat("Audit:", paste(sapply(agent$audit, function(a) a$tool), collapse = ", "), "\n")
+```
+
+### Milestone 2 — ask the agent in plain English
+
+`ask()` is a **router**: keywords → tool → formatted string. "What's its HCC?"
+uses **conversation memory** (the last member you named). A production system
+could swap in Claude to *phrase* the same payload — not to compute it.
+
+```{r}
+# Scripted transcript — the questions a plan analyst actually types
+top_member <- agent$book$member_id[which.max(agent$book$pmpm)]
+questions <- c(
+  "Who needs care management?",
+  "Where are our quality / care gaps?",
+  sprintf("Profile %s", top_member),
+  "What's its HCC?",
+  "Brief leadership."
+)
+for (q in questions) {
+  cat(strrep("=", 68), "\n")
+  cat("Q:", q, "\n")
+  cat(strrep("-", 68), "\n")
+  cat(agent$ask(q), "\n\n")
+}
+```
+
+**Grounded narrative.** If a language model writes the memo, it receives the
+KPI **JSON**. It must not invent a PMPM, member, or savings figure. Offline we
+use a deterministic "rewrite" that only templates those JSON fields — the same
+contract as a live call.
+
+```{r}
+# Stand-in for a live LLM. May only interpolate values from kpis().
+mock_llm_memo <- function(kpis) {
+  para <- sprintf(
+    paste(
+      "We reviewed a synthetic book of %d members (mean age %.1f).",
+      "Mean PMPM is $%s; mean HCC is %.3f. High/Critical accounts for",
+      "%d members (%.1f%%). The top 5%% concentrate %.1f%% of PMPM mass.",
+      "%d of %d members with diabetes have no glucose test on file."
+    ),
+    kpis$n_members, kpis$avg_age, formatC(kpis$avg_pmpm, format = "f", digits = 2, big.mark = ","),
+    kpis$avg_hcc, kpis$high_critical, kpis$high_critical_pct, kpis$top5_cost_share,
+    kpis$care_gap_n, kpis$n_diabetes
+  )
+  # textwrap-style line wrapping for the memo body
+  wrapped <- strwrap(para, width = 68)
+  paste(
+    "MEMO (model-phrased; numbers from tools only)",
+    "",
+    paste(wrapped, collapse = "\n"),
+    "",
+    "These are recommendations for human review, not payment or care orders.",
+    sep = "\n"
+  )
+}
+
+cat(mock_llm_memo(agent$kpis()))
+cat("\n\n")
+cat("Audit trail (who asked, which tool, when):\n")
+audit_df <- bind_rows(lapply(agent$audit, as_tibble))
+print(as.data.frame(audit_df), row.names = FALSE)
+```
+
+**Guardrails worth copying** (from the claims-agent pattern in Module 13's companion notebook):
+
+| Guardrail | How this agent does it |
+|---|---|
+| **Synthetic / no PHI** | Generated members only |
+| **Human in the loop** | Worklists are recommendations |
+| **Transparent rules** | Risk tiers are explicit `if` statements |
+| **Audit trail** | `agent$audit` records `run` / `ask` |
+| **Grounded narrative** | Memo interpolates `kpis()` JSON; it does not recompute HCC |
+| **Not a certified engine** | Not CMS-HCC, not HEDIS, not medical advice |
+
+## 16.4 Federated analytics – move the computation, not the data
+
+In healthcare, data privacy laws and regulatory requirements frequently prevent the movement or pooling of actual patient records across different institutions or clinical sites. As a result, organizations often cannot simply combine all their raw data into a single, centralized database for analysis.
+
+**Federated analytics** is a privacy-preserving solution to this challenge. In a federated approach, each participating site (for example, hospitals or clinics) keeps its patient records locally. Instead of sharing sensitive, row-level data, each site computes **local summary statistics** (such as totals, means, or other aggregates) on its own data, and then only these statistics are communicated to a central coordinator or aggregated further. No individual patient-level data ever leaves the institution where it originated, greatly reducing privacy risks.
+
+For example, to calculate the average Hemoglobin A1c (HbA1c, a marker of blood sugar control) across three simulated sites, each site would:
+- Compute the sum and count of their patients' A1c values locally,
+- Share only (sum, count) pairs, not any raw measurements or records,
+- The central coordinator then combines these numbers to compute the overall mean, without ever seeing any patient's full data.
+
+This paradigm supports privacy, regulatory compliance, and cross-institutional collaboration. The code below demonstrates a federated mean A1c computation using simulated site splits.
+
+```{r}
+# Extract the Hemoglobin A1c (HbA1c) observation values from the EHR data.
+obs <- ehr$observations
+a1c <- obs$value[obs$observation == "Hemoglobin A1c"]
+
+# Fix a seed for reproducibility.
+set.seed(1)
+
+# Randomly permute and split the A1c values into 3 "sites" (contiguous, near-equal chunks).
+# Each site gets a portion of the data and never shares raw patient-level rows with others.
+split_into_n <- function(x, n) {
+  len <- length(x)
+  base <- len %/% n
+  rem <- len %% n
+  sizes <- rep(base, n)
+  if (rem > 0) sizes[seq_len(rem)] <- sizes[seq_len(rem)] + 1
+  ends <- cumsum(sizes)
+  starts <- ends - sizes + 1
+  lapply(seq_len(n), function(i) x[starts[i]:ends[i]])
+}
+sites <- split_into_n(sample(a1c), 3)
+
+# For federated analytics, each site locally computes aggregate statistics:
+# Only the 'sum' of values and the 'count' of patients are shared externally; no raw values leave the site.
+local_stats <- lapply(seq_along(sites), function(i) {
+  s <- sites[[i]]
+  list(site = i, n = length(s), sum = sum(s))  # Sum of A1c values at this site
+})
+
+cat("Per-site shared statistics (no raw values leave the site):\n")
+for (st in local_stats) {
+  cat(" ", sprintf("{site: %d, n: %d, sum: %.4f}", st$site, st$n, st$sum), "\n")
+}
+
+# The central coordinator receives only the aggregates, not any individual records,
+# and computes the overall (global) mean A1c by combining per-site sums and counts.
+global_n <- sum(sapply(local_stats, function(s) s$n))
+global_mean <- sum(sapply(local_stats, function(s) s$sum)) / global_n
+
+cat(sprintf("\nFederated global mean A1c: %.3f %% (n=%d)\n", global_mean, global_n))
+
+# For validation, calculate the mean as if centralizing all data (i.e., if pooling were allowed).
+# This should match the federated result if all math is correct.
+cat(sprintf("Centralized check (if pooling were allowed): %.3f %%  -> identical\n", mean(a1c)))
+```
+
+### Milestone 3 - an equity / bias check
+
+This step involves performing an equity or bias check to assess whether our screening flag is applied fairly across different demographic groups (e.g., by sex). We compare the flagging rate in each group to look for large disparities, which could indicate bias in the data or model. If a significant gap is found, it may require further investigation and mitigation to ensure fair and equitable model performance.
+
+```{r}
+# The following code assesses whether the A1c screening flag (which indicates possible diabetes) is being applied equitably across different sex groups.
+
+# 1. Retrieve patient table and A1c observation data.
+patients <- ehr$patients
+# 2. For each patient, find their highest Hemoglobin A1c (HbA1c) value.
+a1c_max <- obs %>%
+  filter(observation == "Hemoglobin A1c") %>%
+  group_by(patient_id) %>%
+  summarize(value = max(value), .groups = "drop")
+# 3. Merge this maximum A1c value with the patient demographic table using patient_id.
+df <- patients %>% left_join(a1c_max %>% rename(a1c = value), by = "patient_id")
+# 4. Create a 'flagged' column: patients are flagged if their A1c is 6.5 or above (possible diabetes threshold).
+df$flagged <- df$a1c >= 6.5
+
+# 5. For each sex group, calculate the screening flag rate (percentage of patients flagged) and the subgroup count.
+equity <- df %>%
+  filter(!is.na(a1c)) %>%                        # Exclude patients with missing A1c
+  group_by(sex) %>%                               # Group by sex, look at "flagged" column
+  summarize(flag_rate = mean(flagged), count = n(), .groups = "drop")
+# 6. Convert flag rates to percentages (rounded to 1 decimal).
+equity$flag_rate <- round(equity$flag_rate * 100, 1)
+
+cat("Screening-flag rate by sex (watch for large gaps):\n")
+print(as.data.frame(equity), row.names = FALSE)
+
+# 7. Calculate the absolute difference in flag rates between the two sex groups.
+gap <- abs(equity$flag_rate[1] - equity$flag_rate[2])
+
+# 8. Print a message interpreting the gap.
+cat(sprintf(
+  "\nAbsolute gap: %.1f percentage points -> %s\n",
+  gap, ifelse(gap > 10, "review for bias", "within a reasonable band (synthetic data)")
+))
+```
+
+## 16.5 Ethics, regulation, and equity
+
+The technical work is necessary but not sufficient. Responsible health AI/informatics
+weighs:
+
+- **Regulation** - FDA oversight of AI/ML as software-as-a-medical-device (SaMD);
+  HIPAA; emerging AI-specific rules.
+- **Transparency** - model cards, documented training data, explainability where
+  decisions affect care.
+- **Equity** -  auditing for disparate performance across race, sex, age, language,
+  and socioeconomic status; representative training data.
+- **Human oversight** - AI (including **agents** that call tools) augments
+  clinicians and analysts; it does not replace accountable human judgment.
+  Worklists and risk scores are recommendations, not orders.
+
+These are entry points, not the last word — each is an active area your work will
+keep engaging with.
+
+## 16.6 Data Governance
+
+Data governance is the framework of processes, policies, and standards that ensure health data is accurate, secure, and used appropriately throughout its lifecycle.
+
+Key elements of data governance in health informatics include:
+
+- **Data Quality**: Ensuring that data is complete, accurate, timely, and consistent.
+- **Privacy and Security**: Protecting patient information to comply with laws like HIPAA; applying access controls, audits, and de-identification where needed.
+- **Data Stewardship and Ownership**: Defining responsibilities for data management, from custodianship to authorized access and consent management.
+- **Lineage and Provenance**: Tracking where data comes from, how it is transformed, and recording any changes for full auditability.
+- **Compliance**: Meeting regulatory obligations and best practices for data handling, retention, sharing, and disposal.
+- **Interoperability Standards**: Using shared vocabularies (like FHIR, SNOMED, LOINC) and data structures for safe and seamless data exchange between systems.
+
+Good data governance builds trust, ensures ethical use, and is essential for responsible health AI development and collaboration across institutions.
+
+## Exercises
+
+1. Extend the mock autocoder to return a **low-confidence** suggestion and confirm
+   the validator routes it to *flagged*, not *accepted*.
+2. Add a third site with a deliberately **different** A1c distribution and confirm
+   the federated mean still matches the pooled mean exactly.
+3. Extend the equity check to **age bands** as well as sex, and report the largest
+   subgroup gap.
+4. Add an `ask()` route for **"what is the mean HCC?"** that reads `kpis()` —
+   do not hard-code a number in the reply string.
+
+## Key takeaways
+
+- LLMs assist documentation and **autocoding**, but the pattern is always
+  **extract → structure → validate → human review**.
+- Keep **FHIR as source of truth**: LLMs read from and write back to it, tagged for provenance.
+- **Agentic AI** is a **plan over tools** (clean → features → risk → brief), not a
+  chatbot inventing PMPM. Numbers stay with code; the model may only rephrase.
+- **Federated** analytics shares **statistics, not records** — and can match pooled results exactly.
+- **Ethics, regulation, and equity** decide what should ship, not just what can.
+
+---
+
+## 🎓 Series complete
+
+That closes **Health Informatics in R** — 16 modules across 4 parts, from the
+information lifecycle through standards, interoperability, data engineering, privacy,
+NLP, decision support, population health, claims analysis, warehousing, bulk exchange,
+and emerging AI (including agentic workflows). Every module runs on self-contained
+synthetic data, so the whole series is reproducible end to end with no PHI and no
+external downloads.
